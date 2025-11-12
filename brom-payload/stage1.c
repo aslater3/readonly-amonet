@@ -8,14 +8,18 @@ int print(char* s){
         c = s[++i];
     }
     return i;
+
 }
 
 int main() {
-
     print("Entered 1ST stage payload\n");
     print("Copyright xyz, k4y0z 2019\n");
 
-    //This is so we don't get a USB-Timeout
+    // Fix ptr_send
+    int (*(*usbdl_ptr))() = (void*)0xd2e4;
+    *(volatile uint32_t *)(usbdl_ptr[0] + 8) = (uint32_t)usbdl_ptr[2];
+
+    // This is so we don't get a USB-Timeout
     print("Send USB response\n");
     send_usb_response(1,0,1);
 
