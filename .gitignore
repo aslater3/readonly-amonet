@@ -1,5 +1,7 @@
 env
 old
+brom-payload/stage1
+brom-payload/stage2
 __pycache__
 amonet.log
 modules/__pycache__
