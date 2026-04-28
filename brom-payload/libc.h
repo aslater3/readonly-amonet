@@ -1,7 +1,5 @@
 #pragma once
 
-#include "printf.h"
-
 /** \name Fixed width integers
  *  @{
  */
@@ -18,8 +16,6 @@ typedef unsigned long long u64_t;        ///< Unsigned 64-bit type
 typedef unsigned size_t;
 
 size_t strlen(const char *str);
-int printf(const char *format, ...);
-int sprintf (char *str, const char *format, ...);
 char *strcpy(char *to, const char *from);
 int strncmp(const char *s1, const char *s2, u32_t n);
 void*  memset(void*  dst, int c, u32_t n);

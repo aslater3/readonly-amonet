@@ -17,8 +17,4 @@ extern int (*send_data)();
 // addr, sz, flags (=0)
 extern int (*recv_data)();
 
-extern void low_uart_put(int ch);
-
-extern void _putchar(char character);
-
 #endif

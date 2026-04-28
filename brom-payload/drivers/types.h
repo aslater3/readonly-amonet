@@ -15,7 +15,7 @@ typedef int8_t s8;
 typedef int atomic_t;
 typedef int bool;
 
-#include "../printf.h"
+#include "../debug.h"
 
 #define printk printf
 #define KERN_WARNING "[KERN] "

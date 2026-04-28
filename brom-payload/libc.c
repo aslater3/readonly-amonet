@@ -2,55 +2,6 @@
 
 #include <stdarg.h>
 
-/** \brief Division result
- *  \sa uidiv
- */
-typedef struct uidiv_result {
-    u32_t quo;  ///< Quotient
-    u32_t rem;  ///< Remainder
-} uidiv_result_t;
-
-/********************************************//**
- *  \brief Unsigned integer division
- *
- *  ARM does not have native division support
- *  \returns Result of operation or zero if
- *  dividing by zero.
- ***********************************************/
-uidiv_result_t
-uidiv (u32_t num,   ///< Numerator
-       u32_t dem)   ///< Denominator
-{
-    u32_t tmp = dem;
-    uidiv_result_t ans = {0};
-
-    if (dem == 0)
-    {
-        // TODO: Somehow make error
-        return ans;
-    }
-
-    while (tmp <= num >> 1)
-    {
-        tmp <<= 1;
-    }
-
-    do
-    {
-        if (num >= tmp)
-        {
-            num -= tmp;
-            ans.quo++;
-        }
-        ans.quo <<= 1;
-        tmp >>= 1;
-    } while (tmp >= dem);
-    ans.quo >>= 1;
-    ans.rem = num;
-
-    return ans;
-}
-
 void*  memset(void*  dst, int c, u32_t n)
 {
     char*  q   = dst;
