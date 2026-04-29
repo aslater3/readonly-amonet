@@ -55,15 +55,10 @@ def load_payload(dev):
     d = dev.dev
 
     addr = 0x10007050
-    result = dev.read32(addr)
-    dev.write32(addr, [0xA1000]) # 00 10 0A 00
-    result = dev.read32(addr)
 
-    cnt = 15
-    for i in range(cnt):
-        dev.read32(addr - (cnt - i) * 4, cnt - i + 1)
-
-    dev.write32(addr, 0)
+    # plant 0xa1000 at scratch, then read back 5 words starting at addr-0x10
+    dev.write32(addr, [0xA1000])
+    dev.read32(addr - 0x10, (0x10 + 0x4) // 4)  # read32(0x10007040, 5)
 
     attempt2(d)
 
