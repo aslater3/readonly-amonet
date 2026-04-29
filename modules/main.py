@@ -3,7 +3,7 @@
 import sys
 import time
 
-from common import Device
+from device import Device
 from logger import log
 from load_payload import load_payload
 from functions import *
@@ -113,7 +113,5 @@ if __name__ == "__main__":
 
     check_modemmanager()
 
-    dev = Device()
-    dev.find_device()
-
-    main(dev)
+    device = Device().find()
+    main(device)

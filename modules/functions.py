@@ -4,7 +4,7 @@ import sys
 import time
 import threading
 
-from common import Device
+from device import Device
 from logger import log
 
 class UserInputThread(threading.Thread):
