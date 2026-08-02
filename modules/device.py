@@ -19,7 +19,6 @@ class Device:
         self.udev = None
         self.dev = None
         self.rxbuffer = array.array('B')
-        self.preloader = False
         self.timeout = TIMEOUT
         self.usbdk = False
         self.libusb0 = False
@@ -44,13 +43,13 @@ class Device:
 
         log("Waiting for device")
         if wait:
-            self.udev = usb.core.find(idVendor=int(VID, 16), backend=self.backend)
+            self.udev = usb.core.find(idVendor=int(VID, 16), idProduct=int(PID, 16), backend=self.backend)
             while self.udev:
                 time.sleep(0.25)
-                self.udev = usb.core.find(idVendor=int(VID, 16), backend=self.backend)
+                self.udev = usb.core.find(idVendor=int(VID, 16), idProduct=int(PID, 16), backend=self.backend)
         self.udev = None
         while not self.udev:
-            self.udev = usb.core.find(idVendor=int(VID, 16), backend=self.backend)
+            self.udev = usb.core.find(idVendor=int(VID, 16), idProduct=int(PID, 16), backend=self.backend)
             if self.udev:
                 break
             time.sleep(0.25)
@@ -82,16 +81,6 @@ class Device:
             except AttributeError:
                 log("Failed to enable libusb0")
                 exit(1)
-
-        if self.udev.idProduct != int(PID, 16):
-            self.preloader = True
-        else:
-            try:
-                self.udev.set_configuration(1)
-                usb.util.claim_interface(self.udev, 0)
-                usb.util.claim_interface(self.udev, 1)
-            except usb.core.USBError:
-                pass
 
         cdc_if = usb.util.find_descriptor(self.udev.get_active_configuration(), bInterfaceClass=0xA)
         self.ep_in = usb.util.find_descriptor(cdc_if, custom_match=lambda x: usb.util.endpoint_direction(x.bEndpointAddress) == usb.util.ENDPOINT_IN)
