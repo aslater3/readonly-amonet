@@ -372,6 +372,10 @@ class Device:
         self.write(0xf00dd00d, 4)
         self.write(0x3001, 4)
 
+    def set_fastboot_flag(self):
+        self.write(0xf00dd00d, 4)
+        self.write(0x6000, 4)
+
     def rpmb_read(self):
         self.write(0xf00dd00d, 4)
         self.write(0x2000, 4)

@@ -126,6 +126,12 @@ int main() {
             reg[8/4] = 0x1971;
             break;
         }
+        case 0x6000: {
+            printf("Set fastboot flag\n");
+            volatile uint32_t *reg = (volatile uint32_t *)0x10007000;
+            reg[0x24/4] |= (1 << 2);
+            break;
+        }
         default:
             printf("Invalid command\n");
             break;
