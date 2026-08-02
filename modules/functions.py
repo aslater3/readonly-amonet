@@ -125,3 +125,9 @@ def parse_gpt(dev):
         part_end = struct.unpack("<Q", part[0x28:0x30])[0]
         parts[part_name] = (part_start, part_end - part_start + 1)
     return parts
+
+def reset_bcb(dev, gpt):
+    block = bytearray(dev.emmc_read(gpt["misc"][0] + 1))
+    bcb_start = 0x160
+    block[bcb_start:bcb_start+7] = b'\x00\x41\x42\x42\x01\x8f\x00'
+    dev.emmc_write(gpt["misc"][0] + 1, bytes(block))
