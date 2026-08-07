@@ -9,7 +9,6 @@ cp -r brom-payload/stage1/stage1.bin dist/kamakiri/brom-payload/stage1
 cp -r brom-payload/stage2/stage2.bin dist/kamakiri/brom-payload/stage2
 cp -r modules/*.py dist/kamakiri/modules
 cp requirements.txt dist/kamakiri
-cp -r META-INF dist/
 cd dist/
 zip -r kamakiri-cupcake.zip *
 cd ..
