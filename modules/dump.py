@@ -2,23 +2,27 @@
 """Read every non-empty user-area GPT partition through the BROM payload.
 
 This module deliberately does not import ``functions.py``: that module also
-contains the installer write/reboot helpers.  The only device operations used
-here after payload loading are user-area block reads and watchdog kicks.
+contains the installer write/reboot helpers.  After payload loading, this
+module only reads user-area eMMC blocks and kicks the watchdog.
 
 Run from this repository's ``modules`` directory:
 
     python3 dump.py [output-directory]
 
-The output directory contains only files named ``<partition-name>.bin``.
+The output directory contains ``<partition-name>.bin`` files plus run logs and
+the ``dump.tar``/``logs.tar.gz`` sendable archives.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import re
 import struct
 import sys
+import tarfile
+import traceback
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +40,11 @@ GPT_MAX_ENTRY_SIZE = 4096
 GPT_MAX_ENTRIES = 4096
 WATCHDOG_INTERVAL_BLOCKS = 32
 SAFE_PARTITION_NAME = re.compile(r"^[A-Za-z0-9._+\-]+$")
+DUMP_LOG_NAME = "dump.log"
+AMONET_LOG_NAME = "amonet.log"
+DUMP_ARCHIVE_NAME = "dump.tar"
+LOG_ARCHIVE_NAME = "logs.tar.gz"
+
 
 
 @dataclass(frozen=True)
@@ -57,6 +66,94 @@ class Partition:
 
 class GptError(RuntimeError):
     """The target's user-area GPT is absent or internally inconsistent."""
+
+
+class _Tee:
+    """Write terminal output to the console and a persistent run log."""
+
+    def __init__(self, *streams) -> None:
+        self.streams = streams
+
+    def write(self, data: str) -> int:
+        for stream in self.streams:
+            stream.write(data)
+            stream.flush()
+        return len(data)
+
+    def flush(self) -> None:
+        for stream in self.streams:
+            stream.flush()
+
+    def isatty(self) -> bool:
+        return any(stream.isatty() for stream in self.streams)
+
+
+def _write_tar_atomic(archive_path: Path, members: Iterable[Path], gzip: bool) -> None:
+    """Create a host-side archive atomically from the supplied files."""
+
+    temporary = archive_path.with_name(f".{archive_path.name}.part")
+    mode = "w:gz" if gzip else "w"
+    with tarfile.open(temporary, mode) as archive:
+        for member in sorted(members, key=lambda path: path.name):
+            archive.add(member, arcname=member.name, recursive=False)
+    os.replace(temporary, archive_path)
+
+
+def update_dump_archive(output_dir: Path, completed: Iterable[Path]) -> bool:
+    """Refresh ``dump.tar`` with completed partition files only."""
+
+    members = [
+        path
+        for path in completed
+        if path.parent == output_dir
+        and path.is_file()
+        and path.suffix == ".bin"
+        and not path.name.startswith(".")
+    ]
+    if not members:
+        return False
+    _write_tar_atomic(output_dir / DUMP_ARCHIVE_NAME, members, gzip=False)
+    return True
+
+
+def create_log_archive(output_dir: Path) -> Path:
+    """Bundle all dumper log files into one sendable gzip-compressed tar."""
+
+    members = [
+        output_dir / DUMP_LOG_NAME,
+        output_dir / AMONET_LOG_NAME,
+    ]
+    members = [path for path in members if path.is_file()]
+    if not members:
+        raise RuntimeError("no log files were produced")
+    archive_path = output_dir / LOG_ARCHIVE_NAME
+    _write_tar_atomic(archive_path, members, gzip=True)
+    return archive_path
+
+
+def _check_fixed_output_collisions(output_dir: Path, overwrite: bool) -> None:
+    """Refuse to append to or replace prior run metadata accidentally."""
+
+    if overwrite:
+        return
+    existing = [
+        output_dir / name
+        for name in (
+            DUMP_LOG_NAME,
+            AMONET_LOG_NAME,
+            DUMP_ARCHIVE_NAME,
+            LOG_ARCHIVE_NAME,
+            f".{DUMP_ARCHIVE_NAME}.part",
+            f".{LOG_ARCHIVE_NAME}.part",
+        )
+        if (output_dir / name).exists()
+    ]
+    if existing:
+        raise FileExistsError(
+            "output directory contains artifacts from an earlier run: "
+            + ", ".join(str(path) for path in existing)
+            + "; use a new directory or --overwrite"
+        )
 
 
 def _read_blocks(device, start_lba: int, count: int) -> bytes:
@@ -177,7 +274,13 @@ def _check_output_collisions(output_dir: Path, partitions: Iterable[Partition], 
             )
 
 
-def dump_partition(device, output_dir: Path, partition: Partition, overwrite: bool) -> None:
+def dump_partition(
+    device,
+    output_dir: Path,
+    partition: Partition,
+    overwrite: bool,
+    completed: list[Path],
+) -> None:
     """Dump one partition using block reads and an atomic host-side rename."""
 
     destination = output_dir / f"{partition.name}.bin"
@@ -217,31 +320,13 @@ def dump_partition(device, output_dir: Path, partition: Partition, overwrite: bo
             f"{temporary.stat().st_size} != {partition.bytes}"
         )
     os.replace(temporary, destination)
+    completed.append(destination)
+    update_dump_archive(output_dir, completed)
     print(f"  {partition.name}: complete" + " " * 20, flush=True)
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Read every non-empty user-area GPT partition into partition_name.bin files"
-    )
-    parser.add_argument(
-        "output_directory",
-        nargs="?",
-        type=Path,
-        default=Path("dump"),
-        help="directory for partition_name.bin files (default: ./dump)",
-    )
-    parser.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="replace existing host-side dump files",
-    )
-    args = parser.parse_args(argv)
-
-    output_dir: Path = args.output_directory.expanduser()
-    if not output_dir.is_absolute():
-        output_dir = (Path.cwd() / output_dir).resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
+def _run_dump(output_dir: Path, overwrite: bool) -> int:
+    """Run the device operation inside the already-configured log capture."""
 
     module_dir = Path(__file__).resolve().parent
     required_payloads = (
@@ -266,12 +351,12 @@ def main(argv: list[str] | None = None) -> int:
         os.chdir(original_cwd)
 
     # The freshly initialized eMMC interface starts in its default user area.
-    # Do not call emmc_switch(0) here: the payload implements that operation as
-    # MMC_SWITCH writing EXT_CSD.PARTITION_CONFIG.  A dump must not issue any
-    # eMMC switch or data-write command; if LBA 1 is not a user-area GPT, fail
-    # closed instead of changing the device's partition-selection state.
+    # Do not call emmc_switch(0): the payload implements that operation as an
+    # MMC_SWITCH write to EXT_CSD.PARTITION_CONFIG.  If LBA 1 is not a user-area
+    # GPT, fail closed instead of changing the device's partition-selection
+    # state.
     partitions = parse_gpt(device)
-    _check_output_collisions(output_dir, partitions, args.overwrite)
+    _check_output_collisions(output_dir, partitions, overwrite)
 
     print(f"Found {len(partitions)} non-empty GPT partitions:", flush=True)
     for partition in partitions:
@@ -281,11 +366,75 @@ def main(argv: list[str] | None = None) -> int:
             flush=True,
         )
 
+    completed: list[Path] = []
     for partition in partitions:
-        dump_partition(device, output_dir, partition, args.overwrite)
+        dump_partition(device, output_dir, partition, overwrite, completed)
 
-    print(f"Completed {len(partitions)} partition dumps in {output_dir}", flush=True)
+    print(f"Completed {len(completed)} partition dumps in {output_dir}", flush=True)
+    print(f"Partition archive: {output_dir / DUMP_ARCHIVE_NAME}", flush=True)
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Read every non-empty user-area GPT partition "
+            "into partition_name.bin files"
+        )
+    )
+    parser.add_argument(
+        "output_directory",
+        nargs="?",
+        type=Path,
+        default=Path("dump"),
+        help="directory for partition_name.bin files (default: ./dump)",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="replace existing host-side dump files",
+    )
+    args = parser.parse_args(argv)
+
+    output_dir: Path = args.output_directory.expanduser()
+    if not output_dir.is_absolute():
+        output_dir = (Path.cwd() / output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        _check_fixed_output_collisions(output_dir, args.overwrite)
+    except FileExistsError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 2
+
+    dump_log = output_dir / DUMP_LOG_NAME
+    amonet_log = output_dir / AMONET_LOG_NAME
+    os.environ["AMONET_LOG_FILE"] = str(amonet_log)
+    result = 1
+    try:
+        with dump_log.open("w", encoding="utf-8", buffering=1) as log_file:
+            tee_stdout = _Tee(sys.stdout, log_file)
+            tee_stderr = _Tee(sys.stderr, log_file)
+            with contextlib.redirect_stdout(tee_stdout), contextlib.redirect_stderr(tee_stderr):
+                print(f"Run log: {dump_log}", flush=True)
+                print(f"Output directory: {output_dir}", flush=True)
+                try:
+                    result = _run_dump(output_dir, args.overwrite)
+                except KeyboardInterrupt:
+                    traceback.print_exc()
+                    print("Interrupted; no reboot was requested by dump.py.", flush=True)
+                    result = 130
+                except BaseException:
+                    traceback.print_exc()
+                    result = 1
+    finally:
+        try:
+            log_archive = create_log_archive(output_dir)
+            print(f"Log archive: {log_archive}")
+        except Exception as error:
+            print(f"ERROR: could not create log archive: {error}", file=sys.stderr)
+            result = 1
+    return result
 
 
 if __name__ == "__main__":

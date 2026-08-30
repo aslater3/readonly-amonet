@@ -3,8 +3,10 @@ from __future__ import annotations
 import ast
 import hashlib
 import importlib.util
+import os
 import struct
 import sys
+import tarfile
 from pathlib import Path
 
 
@@ -92,7 +94,7 @@ def test_dump_partition_is_exact_and_atomic(tmp_path: Path) -> None:
     partition = DUMP.Partition("boot_a", 100, 102)
     payload = {100: b"A" * 512, 101: b"B" * 512, 102: b"C" * 512}
     fake = FakeDevice(payload)
-    DUMP.dump_partition(fake, tmp_path, partition, overwrite=False)
+    DUMP.dump_partition(fake, tmp_path, partition, overwrite=False, completed=[])
     result = (tmp_path / "boot_a.bin").read_bytes()
     assert result == payload[100] + payload[101] + payload[102]
     assert not (tmp_path / ".boot_a.bin.part").exists()
@@ -104,7 +106,6 @@ def test_dumper_source_contains_no_persistent_device_write_or_reboot() -> None:
     tree = ast.parse(DUMP_PATH.read_text())
     forbidden = {
         "emmc_write",
-        "emmc_switch",
         "rpmb_write",
         "reboot",
         "flash_data",
@@ -118,6 +119,7 @@ def test_dumper_source_contains_no_persistent_device_write_or_reboot() -> None:
     }
     assert not (calls & forbidden)
     assert "emmc_read" in calls
+    assert "emmc_switch" not in calls
     assert "kick_watchdog" in calls
 
 
@@ -125,5 +127,43 @@ def test_partition_name_output_is_sha256_stable(tmp_path: Path) -> None:
     partition = DUMP.Partition("misc", 7, 7)
     payload = b"M" * 512
     fake = FakeDevice({7: payload})
-    DUMP.dump_partition(fake, tmp_path, partition, overwrite=False)
+    DUMP.dump_partition(fake, tmp_path, partition, overwrite=False, completed=[])
     assert hashlib.sha256((tmp_path / "misc.bin").read_bytes()).hexdigest() == hashlib.sha256(payload).hexdigest()
+
+
+def test_dump_archive_contains_completed_partitions_only(tmp_path: Path) -> None:
+    complete = tmp_path / "boot_a.bin"
+    complete.write_bytes(b"boot")
+    partial = tmp_path / ".system_a.bin.part"
+    partial.write_bytes(b"partial")
+    assert DUMP.update_dump_archive(tmp_path, [complete, partial])
+    with tarfile.open(tmp_path / "dump.tar", "r") as archive:
+        assert archive.getnames() == ["boot_a.bin"]
+
+
+def test_log_archive_contains_all_run_logs(tmp_path: Path) -> None:
+    (tmp_path / "dump.log").write_text("stdout/stderr\n", encoding="utf-8")
+    (tmp_path / "amonet.log").write_text("payload log\n", encoding="utf-8")
+    archive_path = DUMP.create_log_archive(tmp_path)
+    with tarfile.open(archive_path, "r:gz") as archive:
+        assert archive.getnames() == ["amonet.log", "dump.log"]
+
+
+def test_logger_honors_run_log_environment_path(tmp_path: Path) -> None:
+    logger_path = MODULES / "logger.py"
+    logger_spec = importlib.util.spec_from_file_location("test_logger", logger_path)
+    assert logger_spec and logger_spec.loader
+    logger = importlib.util.module_from_spec(logger_spec)
+    sys.modules[logger_spec.name] = logger
+    logger_spec.loader.exec_module(logger)
+    target = tmp_path / "amonet.log"
+    previous = os.environ.get("AMONET_LOG_FILE")
+    os.environ["AMONET_LOG_FILE"] = str(target)
+    try:
+        logger.log("test log line")
+    finally:
+        if previous is None:
+            os.environ.pop("AMONET_LOG_FILE", None)
+        else:
+            os.environ["AMONET_LOG_FILE"] = previous
+    assert "test log line" in target.read_text(encoding="utf-8")
