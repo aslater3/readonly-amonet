@@ -19,9 +19,11 @@ The dumper:
   memory;
 - reads GPT header/table sectors from the eMMC user area;
 - reads each non-empty GPT partition one 512-byte sector at a time;
+- reads the 4 MiB eMMC hardware boot areas as `boot0.bin` and `boot1.bin`;
 - writes the resulting files only on the host;
 - periodically kicks the volatile watchdog while reading; and
-- exits after the final partition.
+- exits after the final partition and returns the active eMMC access area to
+  user.
 
 The run directory contains these sendable artifacts:
 
@@ -29,16 +31,18 @@ The run directory contains these sendable artifacts:
 - `amonet.log` — timestamped Amonet/payload log messages;
 - `logs.tar.gz` — one compressed log bundle containing both log files; and
 - `dump.tar` — an uncompressed tar archive containing every partition file
-  completed so far.
+  completed so far, including `boot0.bin` and `boot1.bin`.
 
 `dump.tar` is refreshed after every completed partition. If the run is
 interrupted or a later partition fails, the archive still contains the earlier
 completed files and must be sent together with `logs.tar.gz`.
 
 After payload loading, `dump.py` does not request an eMMC data write, RPMB
-write, eMMC partition switch, fastboot flag, or reboot. The stage-2 payload
-still contains dormant write/reboot command handlers inherited from the
-upstream payload, but this program never sends those command values.
+write, fastboot flag, or reboot. It does perform the explicitly requested
+read-only capture of BOOT0/BOOT1 by selecting those eMMC access areas and
+returns to the user area after each one. The stage-2 payload still contains
+dormant write/reboot command handlers inherited from the upstream payload, but
+this program never sends those command values.
 
 The dumped data may contain device-specific identity, calibration, keys, or
 user data. Store it privately and do not publish the output directory without
@@ -116,12 +120,15 @@ prompt, remove the short when requested, and press Enter. The dumper then:
 3. reads and validates the primary GPT at LBA 1;
 4. prints every non-empty user-area partition name and LBA range;
 5. reads the user-area partitions as `<partition-name>.bin`;
-6. refreshes `dump.tar` after each completed file and creates `logs.tar.gz`
+6. selects and reads the 4 MiB BOOT0 and BOOT1 areas as `boot0.bin` and
+   `boot1.bin`; and
+7. refreshes `dump.tar` after each completed file and creates `logs.tar.gz`
    when the run ends.
 
-RPMB and the eMMC hardware boot areas are not included. They require separate,
-explicitly reviewed capture paths and are not ordinary user-area GPT
-partitions.
+BOOT0/BOOT1 are included because this capture explicitly permits the required
+MMC partition-selection operation. RPMB is not included: it uses authenticated
+RPMB request/response handling rather than ordinary block reads and requires a
+separate, explicitly reviewed capture path.
 
 Example output shape:
 
@@ -132,7 +139,15 @@ Found N non-empty GPT partitions:
 Dumping <partition-name>: <sectors> sectors (<bytes> bytes) -> /path/<partition-name>.bin
   <partition-name>: complete
 ...
-Completed N partition dumps in /path/mt8516-stock-dump
+Selecting eMMC boot0 (area 1); this is an allowed EXT_CSD partition-selection operation
+Dumping boot0: 8192 sectors (4194304 bytes) -> /path/boot0.bin
+  boot0: complete
+Returned eMMC access area to user
+Selecting eMMC boot1 (area 2); this is an allowed EXT_CSD partition-selection operation
+Dumping boot1: 8192 sectors (4194304 bytes) -> /path/boot1.bin
+  boot1: complete
+Returned eMMC access area to user
+Completed N+2 partition dumps in /path/mt8516-stock-dump
 Partition archive: /path/mt8516-stock-dump/dump.tar
 Log archive: /path/mt8516-stock-dump/logs.tar.gz
 ```
@@ -179,16 +194,16 @@ help with a partial or failed capture.
 
 ## What is not included
 
-This procedure dumps the non-empty GPT partitions from the eMMC **user area**.
-It does not dump:
+This procedure dumps the non-empty GPT partitions from the eMMC **user
+area**, plus the two eMMC hardware boot areas. It does not dump:
 
-- eMMC BOOT0;
-- eMMC BOOT1, where Amazon identity/IDME data may reside;
 - RPMB; or
 - unused/unallocated space outside GPT partitions.
 
-Those areas require separate, explicitly reviewed capture paths and are not
-included in `dump.tar`.
+`boot0.bin` and `boot1.bin` are each read as 4 MiB (8192 512-byte sectors),
+which is the MT8516 boot-area geometry used by this branch. RPMB is a separate
+authenticated storage area and requires a different, explicitly reviewed
+capture path; it is not included in `dump.tar`.
 
 ## If it stops or fails
 

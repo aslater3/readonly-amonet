@@ -44,6 +44,7 @@ DUMP_LOG_NAME = "dump.log"
 AMONET_LOG_NAME = "amonet.log"
 DUMP_ARCHIVE_NAME = "dump.tar"
 LOG_ARCHIVE_NAME = "logs.tar.gz"
+BOOT_AREA_SIZE = 4 * 1024 * 1024
 
 
 
@@ -154,6 +155,12 @@ def _check_fixed_output_collisions(output_dir: Path, overwrite: bool) -> None:
             + ", ".join(str(path) for path in existing)
             + "; use a new directory or --overwrite"
         )
+
+
+def _special_area_partition(name: str) -> Partition:
+    """Represent a 4 MiB eMMC hardware boot area as dumpable blocks."""
+
+    return Partition(name, 0, (BOOT_AREA_SIZE // SECTOR_SIZE) - 1)
 
 
 def _read_blocks(device, start_lba: int, count: int) -> bytes:
@@ -356,7 +363,15 @@ def _run_dump(output_dir: Path, overwrite: bool) -> int:
     # GPT, fail closed instead of changing the device's partition-selection
     # state.
     partitions = parse_gpt(device)
-    _check_output_collisions(output_dir, partitions, overwrite)
+    special_areas = [
+        (1, _special_area_partition("boot0")),
+        (2, _special_area_partition("boot1")),
+    ]
+    _check_output_collisions(
+        output_dir,
+        [*partitions, *(partition for _, partition in special_areas)],
+        overwrite,
+    )
 
     print(f"Found {len(partitions)} non-empty GPT partitions:", flush=True)
     for partition in partitions:
@@ -370,6 +385,20 @@ def _run_dump(output_dir: Path, overwrite: bool) -> int:
     for partition in partitions:
         dump_partition(device, output_dir, partition, overwrite, completed)
 
+    for area_number, partition in special_areas:
+        print(
+            f"Selecting eMMC {partition.name} (area {area_number}); "
+            "this is an allowed EXT_CSD partition-selection operation",
+            flush=True,
+        )
+        device.emmc_switch(area_number)
+        try:
+            dump_partition(device, output_dir, partition, overwrite, completed)
+        finally:
+            # Leave the card's active access area at user, without rebooting.
+            device.emmc_switch(0)
+            print("Returned eMMC access area to user", flush=True)
+
     print(f"Completed {len(completed)} partition dumps in {output_dir}", flush=True)
     print(f"Partition archive: {output_dir / DUMP_ARCHIVE_NAME}", flush=True)
     return 0
@@ -378,7 +407,7 @@ def _run_dump(output_dir: Path, overwrite: bool) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Read every non-empty user-area GPT partition "
+            "Read every non-empty user-area GPT partition plus BOOT0/BOOT1 "
             "into partition_name.bin files"
         )
     )

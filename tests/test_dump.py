@@ -119,7 +119,7 @@ def test_dumper_source_contains_no_persistent_device_write_or_reboot() -> None:
     }
     assert not (calls & forbidden)
     assert "emmc_read" in calls
-    assert "emmc_switch" not in calls
+    assert "emmc_switch" in calls
     assert "kick_watchdog" in calls
 
 
@@ -147,6 +147,13 @@ def test_log_archive_contains_all_run_logs(tmp_path: Path) -> None:
     archive_path = DUMP.create_log_archive(tmp_path)
     with tarfile.open(archive_path, "r:gz") as archive:
         assert archive.getnames() == ["amonet.log", "dump.log"]
+
+
+def test_special_boot_area_dump_uses_fixed_four_mib_geometry() -> None:
+    partition = DUMP._special_area_partition("boot0")
+    assert partition.first_lba == 0
+    assert partition.sectors == 8192
+    assert partition.bytes == 4 * 1024 * 1024
 
 
 def test_logger_honors_run_log_environment_path(tmp_path: Path) -> None:
