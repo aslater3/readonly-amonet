@@ -87,7 +87,6 @@ def _log_brom_identity_unlocked(device) -> None:
                 type(error).__name__, error
             )
         )
-        return
 
     try:
         hw_sub_code, hw_ver, sw_ver = device.get_hw_dict()

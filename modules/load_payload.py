@@ -9,6 +9,7 @@ from common import from_bytes, to_bytes
 from logger import log
 from functions import UserInputThread, check_modemmanager
 from brom_diag import describe_status_error, log_brom_identity
+from kamakiri_v1 import kamakiri_v1
 
 import usb.core
 import usb.util
@@ -85,24 +86,12 @@ def load_payload(device):
     if len(stage1) >= 0xA00:
         raise RuntimeError("payload too large")
 
-    try:
-        ptr_usbdl = 0xd2e4
-        payload_address = 0x100A00
-        # bypass_utility's 2021 exploit on this exact MT8516 BROM (hw_sub 0x8a00,
-        # hw_ver 0xcb00) used GET_LINE_CODING (0xA1/0x21, 7 bytes) and descriptor
-        # wValue 0x0200.  mtkclient's kamakiri2 parameters (0x25/8B + 0x02FF)
-        # belong to a different BROM generation and hang this one.
-        linecode = device.udev.ctrl_transfer(0xA1, 0x21, 0, 0, 7) + array.array('B', [0])
-        try:
-            ptr_send = from_bytes(da_read(device, linecode, ptr_usbdl, 4), 4, '<') + 8
-        except RuntimeError as error:
-            raise RuntimeError(describe_status_error(error)) from error
-
-        log("Let's rock")
-        da_write(device, linecode, payload_address, len(stage1), stage1)
-        da_write(device, linecode, ptr_send, 4, to_bytes(payload_address, 4, '<'), False)
-    except usb.core.USBError as e:
-        print(e)
+    # This BROM (hwcode 0x8167, hw_sub 0x8a00, hw_ver 0xcb00, sw 0x1)
+    # deterministically rejects the linecode/0xDA exploit family with status
+    # 0x1A1D on both known parameter variants (verified on hardware 2026-09).
+    # The proven-on-this-BROM flow is kamakiri v1: SEND_CERT upload + wIndex
+    # 0xCC trigger (bypass_utility issue #25, April 2021).
+    kamakiri_v1(device, stage1)
 
     try:
         device.dev.timeout = 1
