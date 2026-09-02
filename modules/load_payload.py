@@ -99,12 +99,26 @@ def load_payload(device):
     except usb.core.USBError as e:
         print(e)
 
-    # We don't need to wait long, if we succeeded
-    # noinspection PyBroadException
     try:
         device.dev.timeout = 1
     except Exception:
         pass
+
+    # The injection STALLs the BROM's EP0 (hence the swallowed [Errno 32]
+    # above).  Some host controllers (xHCI) also halt the CDC bulk endpoints
+    # or wedge their data toggles in that case; clear the halt state so the
+    # stage-1 sync read below is not dropped by the HOST rather than the
+    # device.  Failures here are non-fatal: on controllers that never halted
+    # the endpoints there is nothing to clear.
+    try:
+        cdc_if = usb.util.find_descriptor(
+            device.udev.get_active_configuration(), bInterfaceClass=0x0A
+        )
+        for endpoint in cdc_if:
+            if usb.util.endpoint_direction(endpoint.bEndpointAddress) == usb.util.ENDPOINT_IN:
+                device.udev.clear_halt(endpoint.bEndpointAddress)
+    except Exception as e:
+        print("clear_halt skipped: {}".format(e))
 
     log("Waiting for stage 1 to come online...")
     data = device.read(4)

@@ -242,6 +242,16 @@ capture path; it is not included in `dump.tar`.
   BROM mode, wait for `0e8d:0003`, and run the dumper again; retries after a
   fresh BROM entry are expected. Include `logs.tar.gz` from the failed run if
   it keeps happening.
+- **`[Errno 32] Pipe error` right after `Load payload`:** expected. The
+  injection intentionally STALLs the BROM's control endpoint when execution is
+  diverted to the payload. It is not itself a failure; the next line
+  (`Waiting for stage 1 to come online...`) decides the outcome. If that read
+  returns `b''`, immediately run `--probe-only` **without power-cycling**:
+  - re-enumerates as `0e8d:0003` with a fresh BROM banner -> the core reset;
+    focus on the watchdog value toggle (`0x22000064` vs `0x22000000`).
+  - no device / USB timeout -> the core wedged (hard fault, no reset).
+  - handshake answers immediately -> the payload never took control and the
+    BROM main loop is still running.
 - **A partition leaves a `.part` file:** treat that partition as incomplete,
   preserve `dump.tar` and `logs.tar.gz`, and send both archives. Rerun into a
   new output directory after the device has been safely reset.
