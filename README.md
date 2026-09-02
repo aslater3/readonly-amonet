@@ -213,6 +213,11 @@ capture path; it is not included in `dump.tar`.
   udev permissions, and that no other process owns the device.
 - **GPT validation failure:** stop and preserve the error. Do not run
   `gpt-fix.sh` as a recovery attempt; that script writes GPT data.
+- **`status ... (KAMAKIRI2_CACHE_ISSUE)` during payload loading:** the BROM
+  rejected the exploit command for this attempt. Power the device off, re-enter
+  BROM mode, wait for `0e8d:0003`, and run the dumper again; retries after a
+  fresh BROM entry are expected. Include `logs.tar.gz` from the failed run if
+  it keeps happening.
 - **A partition leaves a `.part` file:** treat that partition as incomplete,
   preserve `dump.tar` and `logs.tar.gz`, and send both archives. Rerun into a
   new output directory after the device has been safely reset.

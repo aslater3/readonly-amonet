@@ -14,6 +14,13 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULES = ROOT / "modules"
 DUMP_PATH = MODULES / "dump.py"
 sys.path.insert(0, str(MODULES))
+
+LOGGER_SPEC = importlib.util.spec_from_file_location("brom_diag", MODULES / "brom_diag.py")
+assert LOGGER_SPEC and LOGGER_SPEC.loader
+BROM_DIAG = importlib.util.module_from_spec(LOGGER_SPEC)
+sys.modules[LOGGER_SPEC.name] = BROM_DIAG
+LOGGER_SPEC.loader.exec_module(BROM_DIAG)
+
 spec = importlib.util.spec_from_file_location("read_only_dump", DUMP_PATH)
 assert spec and spec.loader
 DUMP = importlib.util.module_from_spec(spec)
@@ -174,3 +181,15 @@ def test_logger_honors_run_log_environment_path(tmp_path: Path) -> None:
         else:
             os.environ["AMONET_LOG_FILE"] = previous
     assert "test log line" in target.read_text(encoding="utf-8")
+
+
+def test_brom_status_1d1a_is_decoded_as_cache_issue() -> None:
+    message = BROM_DIAG.describe_status(bytes.fromhex("1d1a"))
+    assert "KAMAKIRI2_CACHE_ISSUE" in message
+    assert "re-enter" in message
+
+
+def test_unknown_brom_status_is_reported_in_both_endiannesses() -> None:
+    message = BROM_DIAG.describe_status(bytes.fromhex("efbe"))
+    assert "LE 0xbeef" in message
+    assert "BE 0xefbe" in message
