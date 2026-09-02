@@ -116,13 +116,14 @@ The payload loader displays its normal short-removal prompt. Follow the
 prompt, remove the short when requested, and press Enter. The dumper then:
 
 1. performs the BROM handshake;
-2. loads stage 1 and stage 2;
-3. reads and validates the primary GPT at LBA 1;
-4. prints every non-empty user-area partition name and LBA range;
-5. reads the user-area partitions as `<partition-name>.bin`;
-6. selects and reads the 4 MiB BOOT0 and BOOT1 areas as `boot0.bin` and
+2. logs the BROM hardware code and target config (secure boot / SLA / DAA);
+3. loads stage 1 and stage 2;
+4. reads and validates the primary GPT at LBA 1;
+5. prints every non-empty user-area partition name and LBA range;
+6. reads the user-area partitions as `<partition-name>.bin`;
+7. selects and reads the 4 MiB BOOT0 and BOOT1 areas as `boot0.bin` and
    `boot1.bin`; and
-7. refreshes `dump.tar` after each completed file and creates `logs.tar.gz`
+8. refreshes `dump.tar` after each completed file and creates `logs.tar.gz`
    when the run ends.
 
 BOOT0/BOOT1 are included because this capture explicitly permits the required
