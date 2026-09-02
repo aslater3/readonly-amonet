@@ -8,7 +8,7 @@ import array
 from common import from_bytes, to_bytes
 from logger import log
 from functions import UserInputThread, check_modemmanager
-from brom_diag import describe_status, log_brom_identity
+from brom_diag import describe_status_error, log_brom_identity
 
 import usb.core
 import usb.util
@@ -89,8 +89,7 @@ def load_payload(device):
         try:
             ptr_send = from_bytes(da_read(device, linecode, ptr_usbdl, 4), 4, '<') + 8
         except RuntimeError as error:
-            message = str(error.args[0]) if error.args else str(error)
-            raise RuntimeError(describe_status(message[-4:].encode())) from error
+            raise RuntimeError(describe_status_error(error)) from error
 
         log("Let's rock")
         da_write(device, linecode, payload_address, len(stage1), stage1)

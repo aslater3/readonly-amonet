@@ -189,6 +189,13 @@ def test_brom_status_1d1a_is_decoded_as_cache_issue() -> None:
     assert "re-enter" in message
 
 
+def test_upstream_status_error_is_hex_decoded_not_ascii_encoded() -> None:
+    message = BROM_DIAG.describe_status_error(RuntimeError("status is 1d1a"))
+    assert "status bytes 1d1a" in message
+    assert "LE 0x1a1d" in message
+    assert "KAMAKIRI2_CACHE_ISSUE" in message
+
+
 def test_unknown_brom_status_is_reported_in_both_endiannesses() -> None:
     message = BROM_DIAG.describe_status(bytes.fromhex("efbe"))
     assert "LE 0xbeef" in message

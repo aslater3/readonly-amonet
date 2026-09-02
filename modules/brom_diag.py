@@ -7,6 +7,8 @@ as ``status is 1d1a``.  mtkclient maps the same wire bytes (little-endian
 recognised cases.
 """
 
+import re
+
 from logger import log
 
 BROM_STATUS_NAMES = {
@@ -35,6 +37,16 @@ def describe_status(raw: bytes) -> str:
     if little_endian == 0x1A1D or big_endian == 0x1A1D:
         message += f". {CACHE_ISSUE_HINT}"
     return message
+
+
+def describe_status_error(error: RuntimeError) -> str:
+    """Decode the raw status pair embedded in an upstream RuntimeError."""
+
+    message = str(error)
+    match = re.search(r"\bstatus(?: bytes)?(?: is)? ([0-9a-fA-F]{4})\b", message)
+    if match is None:
+        return message
+    return describe_status(bytes.fromhex(match.group(1)))
 
 
 def log_brom_identity(device) -> None:
