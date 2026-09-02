@@ -153,6 +153,29 @@ Partition archive: /path/mt8516-stock-dump/dump.tar
 Log archive: /path/mt8516-stock-dump/logs.tar.gz
 ```
 
+### Read-only probe mode
+
+If a dump fails before the payload loads, or you want diagnostics without any
+exploit attempt, run the probe first:
+
+```bash
+uv run --with pyusb==1.0.2 python modules/dump.py --probe-only /absolute/path/to/mt8516-stock-dump
+```
+
+The probe connects, logs the BROM identity, and exits. It performs no payload
+load and no eMMC operation of any kind. Each run (probe or dump) now records:
+
+- BROM hardware code, hardware sub-code, and hardware/software versions;
+- target config (secure boot / SLA / DAA);
+- MEID and SoC ID when the BROM answers;
+- the BROM's internal UART debug log, saved as `brom-log.txt`;
+- host-side context (Python, pyusb/libusb, lsusb view of the device), saved as
+  `host-context.txt`; and
+- all of the above inside `logs.tar.gz`.
+
+Send `logs.tar.gz` from a probe run when a dump keeps failing before the
+payload stage; the BROM log frequently shows the underlying error.
+
 The final names come from the target GPT. For example, if the GPT contains a
 partition named `system_a`, the output is:
 

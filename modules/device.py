@@ -249,6 +249,48 @@ class Device:
 
         return from_bytes(hw_code, 2)
 
+    def get_bl_ver(self):
+        # mtkclient wraps each identity command in GET_BL_VER (0xFE); the BROM
+        # echoes the command byte before answering the wrapped command.
+        self.write(0xFE)
+        reply = self.read(1)
+        if reply != b"\xFE":
+            raise RuntimeError("GET_BL_VER not echoed")
+
+    def get_me_id(self):
+        self.get_bl_ver()
+        self.echo(0xE1)
+
+        length = from_bytes(self.dev.read(4), 4)
+        me_id = self.dev.read(length) if length else b""
+        status = self.dev.read(2)
+
+        if from_bytes(status, 2) != 0:
+            raise RuntimeError("status is {}".format(status.hex()))
+
+        return me_id
+
+    def get_soc_id(self):
+        self.get_bl_ver()
+        self.echo(0xE7)
+
+        length = from_bytes(self.dev.read(4), 4)
+        soc_id = self.dev.read(length) if length else b""
+        status = self.dev.read(2)
+
+        if from_bytes(status, 2) != 0:
+            raise RuntimeError("status is {}".format(status.hex()))
+
+        return soc_id
+
+    def get_brom_log(self):
+        self.echo(0xDD)
+
+        length = from_bytes(self.dev.read(4), 4)
+        if length == 0 or length > 0x10000:
+            return b""
+        return self.dev.read(length)
+
     def get_hw_dict(self):
         self.echo(0xFC)
 

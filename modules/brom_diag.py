@@ -8,6 +8,11 @@ recognised cases.
 """
 
 import re
+import os
+import platform
+import subprocess
+import sys
+from datetime import datetime, timezone
 
 from logger import log
 
@@ -21,6 +26,9 @@ CACHE_ISSUE_HINT = (
     "for 0e8d:0003, and run the dumper again; retries after a fresh BROM entry "
     "are normal."
 )
+
+BROM_LOG_NAME = "brom-log.txt"
+HOST_CONTEXT_NAME = "host-context.txt"
 
 
 def describe_status(raw: bytes) -> str:
@@ -64,6 +72,19 @@ def log_brom_identity(device) -> None:
         return
 
     try:
+        hw_sub_code, hw_ver, sw_ver = device.get_hw_dict()
+        log(
+            "Hardware versions: hw_sub_code=0x{:04x} hw_ver=0x{:04x} "
+            "sw_ver=0x{:04x}".format(hw_sub_code, hw_ver, sw_ver)
+        )
+    except Exception as error:
+        log(
+            "Hardware versions unavailable: {}: {}".format(
+                type(error).__name__, error
+            )
+        )
+
+    try:
         secure_boot, sla, daa = device.get_target_config()
         log(
             "Target config: secure_boot={} sla={} daa={}".format(
@@ -76,3 +97,90 @@ def log_brom_identity(device) -> None:
                 type(error).__name__, error
             )
         )
+
+    for name, getter in (("MEID", device.get_me_id), ("SoC ID", device.get_soc_id)):
+        try:
+            value = getter()
+            log("{}: {}".format(name, value.hex().upper()))
+        except Exception as error:
+            log(
+                "{} unavailable: {}: {}".format(
+                    name, type(error).__name__, error
+                )
+            )
+
+    try:
+        brom_log = device.get_brom_log()
+        if brom_log:
+            log(
+                "BROM internal log: {} bytes (saved to {})".format(
+                    len(brom_log), BROM_LOG_NAME
+                )
+            )
+            _save_brom_log(brom_log)
+        else:
+            log("BROM internal log: empty (command supported, no data)")
+    except Exception as error:
+        log(
+            "BROM internal log unavailable: {}: {}".format(
+                type(error).__name__, error
+            )
+        )
+
+
+def _save_brom_log(brom_log: bytes) -> None:
+    """Persist the raw BROM UART log next to the other run logs."""
+
+    log_file = os.environ.get("AMONET_LOG_FILE")
+    if not log_file:
+        return
+    output_dir = os.path.dirname(os.path.abspath(log_file))
+    text = "".join(
+        chr(byte) if 0x20 <= byte < 0x7F or byte in (0x0A, 0x0D, 0x09) else "."
+        for byte in brom_log
+    )
+    with open(os.path.join(output_dir, BROM_LOG_NAME), "w", encoding="utf-8") as handle:
+        handle.write(text)
+        if not text.endswith("\n"):
+            handle.write("\n")
+
+
+def write_host_context() -> None:
+    """Record host-side facts that make a user-supplied log bundle decisive."""
+
+    log_file = os.environ.get("AMONET_LOG_FILE")
+    if not log_file:
+        return
+    output_dir = os.path.dirname(os.path.abspath(log_file))
+
+    lines = [
+        "timestamp: {}".format(datetime.now(timezone.utc).isoformat()),
+        "python: {} ({})".format(sys.version.split()[0], sys.executable),
+        "platform: {} {}".format(platform.system(), platform.release()),
+        "machine: {}".format(platform.machine()),
+    ]
+    try:
+        import usb
+        import usb.backend.libusb1 as libusb1
+
+        lines.append("pyusb: {}".format(getattr(usb, "__version__", "unknown")))
+        backend = libusb1.get_backend()
+        lines.append(
+            "libusb1 backend: {}".format("present" if backend else "missing")
+        )
+    except Exception as error:
+        lines.append("pyusb probe failed: {}: {}".format(type(error).__name__, error))
+    try:
+        lsusb = subprocess.run(
+            ["lsusb", "-d", "0e8d:"], capture_output=True, text=True, timeout=5
+        )
+        detected = lsusb.stdout.strip() or "(no 0e8d device visible right now)"
+        lines.append("lsusb 0e8d: {}".format(detected.replace("\n", "; ")))
+    except Exception:
+        lines.append("lsusb: not available")
+
+    with open(
+        os.path.join(output_dir, HOST_CONTEXT_NAME), "w", encoding="utf-8"
+    ) as handle:
+        handle.write("\n".join(lines) + "\n")
+    log("Host context written to {}".format(HOST_CONTEXT_NAME))

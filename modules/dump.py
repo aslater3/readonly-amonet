@@ -29,6 +29,12 @@ from pathlib import Path
 from typing import Iterable
 
 from device import Device
+from brom_diag import (
+    BROM_LOG_NAME,
+    HOST_CONTEXT_NAME,
+    log_brom_identity,
+    write_host_context,
+)
 from load_payload import load_payload
 from logger import log
 
@@ -120,11 +126,13 @@ def update_dump_archive(output_dir: Path, completed: Iterable[Path]) -> bool:
 def create_log_archive(output_dir: Path) -> Path:
     """Bundle all dumper log files into one sendable gzip-compressed tar."""
 
-    members = [
+    candidates = [
         output_dir / DUMP_LOG_NAME,
         output_dir / AMONET_LOG_NAME,
+        output_dir / BROM_LOG_NAME,
+        output_dir / HOST_CONTEXT_NAME,
     ]
-    members = [path for path in members if path.is_file()]
+    members = [path for path in candidates if path.is_file()]
     if not members:
         raise RuntimeError("no log files were produced")
     archive_path = output_dir / LOG_ARCHIVE_NAME
@@ -142,6 +150,8 @@ def _check_fixed_output_collisions(output_dir: Path, overwrite: bool) -> None:
         for name in (
             DUMP_LOG_NAME,
             AMONET_LOG_NAME,
+            BROM_LOG_NAME,
+            HOST_CONTEXT_NAME,
             DUMP_ARCHIVE_NAME,
             LOG_ARCHIVE_NAME,
             f".{DUMP_ARCHIVE_NAME}.part",
@@ -353,6 +363,7 @@ def _run_dump(output_dir: Path, overwrite: bool) -> int:
         # implementation untouched and make invocation independent of cwd.
         os.chdir(module_dir)
         device = Device().find()
+        log_brom_identity(device)
         load_payload(device)
     finally:
         os.chdir(original_cwd)
@@ -404,6 +415,22 @@ def _run_dump(output_dir: Path, overwrite: bool) -> int:
     return 0
 
 
+def _run_probe() -> int:
+    """Read-only BROM introspection: no payload, no exploit, no writes."""
+
+    log("Starting read-only BROM probe")
+    module_dir = Path(__file__).resolve().parent
+    original_cwd = Path.cwd()
+    try:
+        os.chdir(module_dir)
+        device = Device().find()
+        log_brom_identity(device)
+        print("Probe complete; no payload was loaded and no writes were issued.", flush=True)
+    finally:
+        os.chdir(original_cwd)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -422,6 +449,11 @@ def main(argv: list[str] | None = None) -> int:
         "--overwrite",
         action="store_true",
         help="replace existing host-side dump files",
+    )
+    parser.add_argument(
+        "--probe-only",
+        action="store_true",
+        help="run read-only BROM identity/log probes and exit without dumping",
     )
     args = parser.parse_args(argv)
 
@@ -448,7 +480,11 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Run log: {dump_log}", flush=True)
                 print(f"Output directory: {output_dir}", flush=True)
                 try:
-                    result = _run_dump(output_dir, args.overwrite)
+                    if args.probe_only:
+                        write_host_context()
+                        result = _run_probe()
+                    else:
+                        result = _run_dump(output_dir, args.overwrite)
                 except KeyboardInterrupt:
                     traceback.print_exc()
                     print("Interrupted; no reboot was requested by dump.py.", flush=True)
