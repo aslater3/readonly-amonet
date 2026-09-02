@@ -58,7 +58,25 @@ def describe_status_error(error: RuntimeError) -> str:
 
 
 def log_brom_identity(device) -> None:
-    """Log read-only BROM identity and security config before the exploit."""
+    """Log read-only BROM identity and security config before the exploit.
+
+    Must run after the BROM handshake: before it, the BROM is still in its
+    command-echo state and every probe misreads.  Also guards each probe with
+    a short-lived no-reset window so a slow/absent reply cannot damage the USB
+    link (the upstream read path otherwise issues udev.reset() on timeout).
+    """
+
+    device.allow_usb_reset = False
+    previous_timeout = device.timeout
+    try:
+        _log_brom_identity_unlocked(device)
+    finally:
+        device.timeout = previous_timeout
+        device.allow_usb_reset = True
+
+
+def _log_brom_identity_unlocked(device) -> None:
+    """Run every probe with the USB reset guard engaged."""
 
     try:
         hwcode = device.get_hw_code()
@@ -148,11 +166,6 @@ def _save_brom_log(brom_log: bytes) -> None:
 def write_host_context() -> None:
     """Record host-side facts that make a user-supplied log bundle decisive."""
 
-    log_file = os.environ.get("AMONET_LOG_FILE")
-    if not log_file:
-        return
-    output_dir = os.path.dirname(os.path.abspath(log_file))
-
     lines = [
         "timestamp: {}".format(datetime.now(timezone.utc).isoformat()),
         "python: {} ({})".format(sys.version.split()[0], sys.executable),
@@ -179,8 +192,20 @@ def write_host_context() -> None:
     except Exception:
         lines.append("lsusb: not available")
 
-    with open(
-        os.path.join(output_dir, HOST_CONTEXT_NAME), "w", encoding="utf-8"
-    ) as handle:
+    path = host_context_path()
+    if path is None:
+        return
+    with open(path, "w", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
     log("Host context written to {}".format(HOST_CONTEXT_NAME))
+
+
+def host_context_path():
+    """Return the run directory's host-context path, or None outside a run."""
+
+    log_file = os.environ.get("AMONET_LOG_FILE")
+    if not log_file:
+        return None
+    return os.path.join(
+        os.path.dirname(os.path.abspath(log_file)), HOST_CONTEXT_NAME
+    )

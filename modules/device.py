@@ -22,6 +22,7 @@ class Device:
         self.timeout = TIMEOUT
         self.usbdk = False
         self.libusb0 = False
+        self.allow_usb_reset = True
 
     def find(self, wait=False):
         if self.dev:
@@ -159,7 +160,7 @@ class Device:
             try:
                 self.rxbuffer.extend(self.ep_in.read(self.ep_in.wMaxPacketSize, self.timeout * 1000))
             except usb.core.USBError as e:
-                if e.errno == 110:
+                if e.errno == 110 and getattr(self, "allow_usb_reset", True):
                     self.udev.reset()
                 break
         if size <= len(self.rxbuffer):

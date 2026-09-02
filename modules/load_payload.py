@@ -8,7 +8,7 @@ import array
 from common import from_bytes, to_bytes
 from logger import log
 from functions import UserInputThread, check_modemmanager
-from brom_diag import describe_status_error, log_brom_identity
+from brom_diag import describe_status_error
 
 import usb.core
 import usb.util
@@ -65,8 +65,6 @@ def noop(*args, **kwargs):
 def load_payload(device):
     log("Handshake")
     device.handshake()
-
-    log_brom_identity(device)
 
     log("Disable watchdog")
     device.write32(0x10007000, 0x22000000)

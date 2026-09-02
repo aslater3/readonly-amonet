@@ -29,11 +29,11 @@ from pathlib import Path
 from typing import Iterable
 
 from device import Device
+import brom_diag
 from brom_diag import (
     BROM_LOG_NAME,
     HOST_CONTEXT_NAME,
     log_brom_identity,
-    write_host_context,
 )
 from load_payload import load_payload
 from logger import log
@@ -363,8 +363,8 @@ def _run_dump(output_dir: Path, overwrite: bool) -> int:
         # implementation untouched and make invocation independent of cwd.
         os.chdir(module_dir)
         device = Device().find()
-        log_brom_identity(device)
         load_payload(device)
+        log_brom_identity(device)
     finally:
         os.chdir(original_cwd)
 
@@ -424,8 +424,19 @@ def _run_probe() -> int:
     try:
         os.chdir(module_dir)
         device = Device().find()
-        log_brom_identity(device)
-        print("Probe complete; no payload was loaded and no writes were issued.", flush=True)
+        device.allow_usb_reset = False
+        try:
+            # Probe mode includes the handshake itself: identity commands only
+            # answer correctly once the BROM has left its echo state.
+            device.handshake()
+            log("Handshake")
+            log_brom_identity(device)
+        finally:
+            device.allow_usb_reset = True
+        print(
+            "Probe complete; no payload was loaded and no writes were issued.",
+            flush=True,
+        )
     finally:
         os.chdir(original_cwd)
     return 0
@@ -471,6 +482,7 @@ def main(argv: list[str] | None = None) -> int:
     dump_log = output_dir / DUMP_LOG_NAME
     amonet_log = output_dir / AMONET_LOG_NAME
     os.environ["AMONET_LOG_FILE"] = str(amonet_log)
+    host_context = brom_diag.write_host_context
     result = 1
     try:
         with dump_log.open("w", encoding="utf-8", buffering=1) as log_file:
@@ -481,7 +493,6 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Output directory: {output_dir}", flush=True)
                 try:
                     if args.probe_only:
-                        write_host_context()
                         result = _run_probe()
                     else:
                         result = _run_dump(output_dir, args.overwrite)
@@ -493,6 +504,12 @@ def main(argv: list[str] | None = None) -> int:
                     traceback.print_exc()
                     result = 1
     finally:
+        # Every run -- probe or dump, success or failure -- always produces a
+        # full log bundle: both host context and the archive step run here.
+        try:
+            host_context()
+        except Exception as error:
+            print(f"ERROR: could not write host context: {error}", file=sys.stderr)
         try:
             log_archive = create_log_archive(output_dir)
             print(f"Log archive: {log_archive}")
