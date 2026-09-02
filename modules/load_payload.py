@@ -67,7 +67,7 @@ def load_payload(device):
     device.handshake()
 
     log("Disable watchdog")
-    device.write32(0x10007000, 0x22000000)
+    device.write32(0x10007000, 0x22000064)
 
     thread = UserInputThread()
     thread.start()
