@@ -364,7 +364,6 @@ def _run_dump(output_dir: Path, overwrite: bool) -> int:
         os.chdir(module_dir)
         device = Device().find()
         load_payload(device)
-        log_brom_identity(device)
     finally:
         os.chdir(original_cwd)
 

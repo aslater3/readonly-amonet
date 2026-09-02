@@ -8,7 +8,7 @@ import array
 from common import from_bytes, to_bytes
 from logger import log
 from functions import UserInputThread, check_modemmanager
-from brom_diag import describe_status_error
+from brom_diag import describe_status_error, log_brom_identity
 
 import usb.core
 import usb.util
@@ -65,6 +65,11 @@ def noop(*args, **kwargs):
 def load_payload(device):
     log("Handshake")
     device.handshake()
+
+    # Identity probes must run here: post-handshake (BROM left its echo state)
+    # and pre-exploit (still talking to the BROM, not stage 1/2).  The probe
+    # wrapper engages the USB no-reset guard itself.
+    log_brom_identity(device)
 
     log("Disable watchdog")
     device.write32(0x10007000, 0x22000064)
