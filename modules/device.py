@@ -240,17 +240,18 @@ class Device:
         return bool(secure_boot), bool(serial_link_authorization), bool(download_agent_authorization)
 
     def get_hw_code(self):
-        # mtkclient reads hwcode as two big-endian 16-bit halves (">HH" over
-        # 4 bytes); the high half carries the code, the low half is zero.
         self.echo(0xFD)
 
-        hw_code = self.dev.read(4)
+        # BROM answers with 2B hwcode + 2B status.  Read them separately:
+        # a single read(4) can consume the whole packet upstream of the
+        # status read and starve it (struct.error seen on arm64 hosts).
+        hw_code = self.dev.read(2)
         status = self.dev.read(2)
 
         if from_bytes(status, 2) != 0:
             raise RuntimeError("status is {}".format(status.hex()))
 
-        return from_bytes(hw_code[:2], 2, '>')
+        return from_bytes(hw_code, 2, '>')
 
     def get_bl_ver(self):
         # mtkclient wraps each identity command in GET_BL_VER (0xFE); the BROM
