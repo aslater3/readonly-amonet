@@ -113,7 +113,11 @@ python3 modules/dump.py
 ```
 
 The payload loader displays its normal short-removal prompt. Follow the
-prompt, remove the short when requested, and press Enter. The dumper then:
+prompt, remove the short when requested, and press Enter. Stage 1 is USB-only:
+it restores the BROM USB transmit pointer, completes the pending control
+transfer, and sends its synchronization word without relying on the hardware
+UART (whose clock/pin configuration is not guaranteed at BROM stage). The
+dumper then:
 
 1. performs the BROM handshake;
 2. logs the BROM hardware code and target config (secure boot / SLA / DAA);

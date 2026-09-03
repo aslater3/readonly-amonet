@@ -200,3 +200,13 @@ def test_unknown_brom_status_is_reported_in_both_endiannesses() -> None:
     message = BROM_DIAG.describe_status(bytes.fromhex("efbe"))
     assert "LE 0xbeef" in message
     assert "BE 0xefbe" in message
+
+
+def test_stage1_restores_usb_before_any_payload_io_and_has_no_uart_dependency() -> None:
+    source = (ROOT / "brom-payload" / "stage1.c").read_text(encoding="utf-8")
+    assert "0x11005000" not in source
+    assert "low_uart_put" not in source
+    restore_at = source.index("*(volatile uint32_t *)(usbdl_ptr[0] + 8)")
+    response_at = source.index("send_usb_response(1, 0, 1)")
+    sync_at = source.index("send_dword(0xA1A2A3A4)")
+    assert restore_at < response_at < sync_at
