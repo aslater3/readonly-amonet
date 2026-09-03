@@ -73,7 +73,7 @@ int main() {
             uint32_t block = recv_dword();
             printf("Write block 0x%08X ", block);
             memset(buf, 0, sizeof(buf));
-            recv_data(buf, 0x200, 0);
+            recv_data(buf, 0x200);
             if (mmc_write(&host, block, buf) != 0) {
                 printf("Write error!\n");
             } else {
@@ -98,7 +98,7 @@ int main() {
         }
         case 0x2001: {
             printf("Write rpmb\n");
-            recv_data(buf, 0x100, 0);
+            recv_data(buf, 0x100);
             mmc_rpmb_write(&host, buf);
             break;
         }
@@ -106,7 +106,7 @@ int main() {
             uint32_t address = recv_dword();
             uint32_t size = recv_dword();
             printf("Read %d Bytes from address 0x%08X\n", size, address);
-            send_data(address, size);
+            send_data((const void *)address, size);
             break;
         }
         case 0x3000: {

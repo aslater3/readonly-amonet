@@ -9,10 +9,14 @@
 
 int main(void) {
     /* Restore the BROM USB TX function overwritten by the v1 handler hijack. */
-    int (*(*usbdl_ptr))(void) = (void *)0xd2e4;
-    *(volatile uint32_t *)(usbdl_ptr[0] + 8) = (uint32_t)usbdl_ptr[2];
+    volatile uint32_t *table = (volatile uint32_t *)0xd2e4;
+    *(volatile uint32_t *)(table[0] + 8) = table[2];
 
-    /* Complete the pending control transfer, then announce over USB CDC. */
+    /* Resolve the USB I/O primitives from the table, then announce. */
+    brom_usb_init();
+
+    /* Complete the pending control transfer, then sync over USB CDC. */
+    void (*send_usb_response)(int, int, int) = (void *)0x6c7d;
     send_usb_response(1, 0, 1);
     send_dword(0xA1A2A3A4);
 
@@ -26,7 +30,7 @@ int main(void) {
         case 0x4000: {
             uint32_t address = recv_dword();
             uint32_t size = recv_dword();
-            send_dword(recv_data(address, size, 0) == 0 ? 0xD0D0D0D0 : 0xF0F0F0F0);
+            send_dword(recv_data((void *)address, size) == 0 ? 0xD0D0D0D0 : 0xF0F0F0F0);
             break;
         }
         case 0x4001: {

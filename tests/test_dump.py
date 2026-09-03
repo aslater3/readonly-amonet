@@ -206,10 +206,26 @@ def test_stage1_restores_usb_before_any_payload_io_and_has_no_uart_dependency() 
     source = (ROOT / "brom-payload" / "stage1.c").read_text(encoding="utf-8")
     assert "0x11005000" not in source
     assert "low_uart_put" not in source
-    restore_at = source.index("*(volatile uint32_t *)(usbdl_ptr[0] + 8)")
+    restore_at = source.index("*(volatile uint32_t *)(table[0] + 8) = table[2]")
     response_at = source.index("send_usb_response(1, 0, 1)")
     sync_at = source.index("send_dword(0xA1A2A3A4)")
     assert restore_at < response_at < sync_at
+
+
+def test_stage1_and_stage2_use_no_unverified_hardcoded_brom_helpers() -> None:
+    # 0xd1ff/0xd1cb are MT8163 leftovers that crash this 8167 BROM build on
+    # first call.  All payload I/O must come from the runtime-resolved
+    # 0xd2e4 USB table (brom_usb_init); only the pattern-verified
+    # send_usb_response entry 0x6c7d may appear as an immediate.
+    import struct
+
+    allowed = {0x6C7D, 0x10007000, 0x22000014, 0x1209, 0x1971, 0xD2E4}
+    for name in ("stage1", "stage2"):
+        blob = (ROOT / "brom-payload" / name / f"{name}.bin").read_bytes()
+        for value in (0xD1FF, 0xD1CB, 0xD2C7, 0xD241):
+            assert struct.pack("<I", value) not in blob, (
+                f"{name} contains forbidden hardcoded helper {value:#x}"
+            )
 
 
 def test_kamakiri_v1_spray_plants_little_endian_payload_pointer() -> None:
