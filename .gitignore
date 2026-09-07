@@ -8,3 +8,5 @@ __pycache__
 amonet.log
 modules/__pycache__
 modules/amonet.log
+dump/
+bridge-diag.txt
