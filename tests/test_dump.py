@@ -296,6 +296,9 @@ def test_preloader_bridge_is_volatile_only(tmp_path: Path) -> None:
         for node in ast.walk(tree)
         if isinstance(node, ast.Constant) and isinstance(node.value, int)
     }
-    # DA upload (0xD7) and DA jump (0xD5) protocol bytes must never be sent.
+    # DA upload (0xD7), DA jump (0xD5) and READ32 (0xD1) protocol bytes must
+    # never be sent: READ32 hung for 8s on hardware and burned the tool
+    # window, so this bridge is WRITE32-only.
     assert 0xD7 not in integers and 0xD5 not in integers
+    assert 0xD1 not in integers
     assert "bridge_to_brom" in source
