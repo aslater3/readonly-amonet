@@ -9,45 +9,49 @@ reachable (disassembled unit) and a shorted eMMC line makes the BROM halt
 preloader tool window: the device appears as ``0e8d:2000`` for ~10 s at
 every power-on ("Tool connection is unlocked" in the UART log).
 
-Protocol facts verified on hardware (2026-09-07)
-------------------------------------------------
-* ``0e8d:2000`` is found, the ``a0 0a 50 05`` complement handshake
-  succeeds (extra leading 0xA0 first, per mtkclient Port.py), the UART
-  confirms "usb_listen", and WRITE32 (0xD4) commands echo cleanly.
-* READ32 (0xD1) is NOT answered: the data phase times out. The first
-  bridge attempt stalled 8 s on a READ32 pre-read, blew the ~10 s tool
-  window, and let the preloader boot the OS (which consumes one IDME
-  boot_count).  This version therefore performs ZERO 0xD1 reads: every
-  step is WRITE32 (0xD4) with strict echo/status verification, so the
-  whole arm + reset fires in ~1 s, far inside the window.
+Protocol facts verified on hardware (2026-09-07, two runs)
+----------------------------------------------------------
+* ``0e8d:2000`` is found and the ``a0 0a 50 05`` complement handshake
+  succeeds (extra leading 0xA0 first, per mtkclient Port.py).
+* The Amazon tool mode pushes a ~511-byte greeting on enumeration
+  (UART: "USB_HANDSHAKE: should be 1 bytes less than 512 bytes") and
+  MIRRORS the host's own bytes back with lag.  Strict fixed-count reads
+  therefore desynchronise permanently: one run stalled 8 s on a READ32
+  (0xD1) data phase and burned the window; another mispaired D4 echoes
+  against still-in-flight handshake bytes.
+* The D4 (WRITE32) command frame itself IS accepted (run 1 verified a
+  watchdog-mode write end-to-end with strict echo+status checks).
 
-Mechanism (volatile only)
--------------------------
-1. find ``0e8d:2000``, handshake, D4-register watchdog disable,
-2. misc_lock = 0xAD98 (unlock), misc_lock+8 = 1 (watchdog-resettable),
+Design consequence: arm BLIND, verify by outcome
+------------------------------------------------
+The side effects we need are register writes, not response payloads, so
+the arm phase performs ZERO reads once the handshake completes: five D4
+WRITE32 frames plus the TOPRGU SWRST frame are written back-to-back in
+well under a second.  The device's reboot verdict then verifies the
+whole chain:
+
+* device resets and ``0e8d:0003`` enumerates  -> flag honoured: SUCCESS;
+* device resets and ``0e8d:2000`` returns     -> BROM ignored the flag
+  at this address; re-handshake on the SAME power-up (no OS boot, no
+  boot_count cost) and auto-retry the next misc_lock candidate;
+* device never blinks                          -> writes did not take
+  effect at all; stop instead of burning further windows.
+
+Mechanism (volatile only; mirrors mtkclient Preloader.reset_to_brom)
+--------------------------------------------------------------------
+1. misc_lock = 0xAD98 (unlock), misc_lock+8 = 1 (watchdog-resettable),
    misc_lock = 0 (relock),
-3. misc_lock-0x20 = 0x444C magic | timeout | EN | ~BROM-bit: asks the
-   BROM to enter usbdl on the *next warm reset*,
-4. TOPRGU SWRST (base+0x14 <- 0x1209): immediate warm reset,
-5. watch what comes back:
-   * ``0e8d:0003``  -> the BROM honoured the flag: SUCCESS, dump runs;
-   * ``0e8d:2000``  -> the SoC reset but the BROM ignored the flag at
-     this address: automatically re-handshake and retry the next
-     misc_lock candidate (a fresh preloader instance, same power-up,
-     no OS boot -> boot_count untouched);
-   * continuous ``2000`` with no gap -> our writes were no-ops (the
-     tool is DAA-gated on this unit): stop and report; the preloader
-     will time out to a normal boot (one boot_count spent);
-   * reset with neither device -> report and let the operator check.
+2. misc_lock-0x20 = 0x444C magic | timeout | EN | ~BROM-bit,
+3. TOPRGU SWRST (base+0x14 <- 0x1209) -> immediate warm reset.
 
 Everything is RAM/register state; no flash, RPMB, or persistent write.
-Power removal clears everything.
+Power removal clears everything.  No 0xD1 READ32, no DA (0xD7/0xD5).
 
 misc_lock candidates
 --------------------
 mtkclient has NO misc_lock for hwcode 0x8167.  Candidates, in order:
 0x10002050 (MT8163/MT8127/MT8135 family), 0x10001838, 0x1000141C,
-0x1001a100.  All come from mtkclient's own Chipconfig table.
+0x1001a100.  All values come from mtkclient's own Chipconfig table.
 """
 
 import struct
@@ -70,9 +74,8 @@ HANDSHAKE = b"\xA0\x0A\x50\x05"
 WDT_BASE = 0x10007000          # mtkclient chipconfig for hwcode 0x8167
 WDT_DISABLE_VALUE = 0x22000064 # key + reload, ENABLE bit clear
 WDT_SWRST_OFFSET = 0x14        # MTK_WDT_SWRST (mt_wdt.h / mainline)
-WDT_SWRST_KEY = 0x1209         # MTK_WDT_SWRST_KEY / SW_RST_MAGIC_NUM
-CMD_WRITE32 = 0xD4             # the ONLY command byte this bridge sends
-CMD_GET_HW_CODE = 0xFD         # optional liveness probe, non-fatal
+WDT_SWRST_KEY = 0x1209         # MTK_WDT_SWRST_KEY
+CMD_WRITE32 = 0xD4             # the only command byte this bridge sends
 DEFAULT_MISC_LOCK = 0x10002050
 MISC_LOCK_FALLBACKS = (0x10002050, 0x10001838, 0x1000141C, 0x1001a100)
 DEFAULT_TIMEOUT_S = 600        # 14-bit seconds field; 600s >> our run
@@ -114,12 +117,18 @@ def misc_lock_candidates(primary=DEFAULT_MISC_LOCK):
     return ordered
 
 
+def write32_frame(addr, value):
+    """The exact D4 WRITE32 command frame, as the tool echoes commands."""
+
+    return (_to_bytes(CMD_WRITE32, 1) + _to_bytes(addr, 4)
+            + _to_bytes(1, 4) + _to_bytes(value, 4))
+
+
 class PreloaderDevice:
-    """WRITE32-only usbdl client for the preloader (0e8d:2000) window."""
+    """usbdl client for the preloader (0e8d:2000) tool window."""
 
     def __init__(self, timeout=READ_TIMEOUT):
         self.timeout = timeout
-        self.rxbuffer = b""
         self.udev = None
         self.ep_in = None
         self.ep_out = None
@@ -158,137 +167,114 @@ class PreloaderDevice:
                     == usb.util.ENDPOINT_OUT)
                 if self.ep_in is None or self.ep_out is None:
                     raise PreloaderBridgeError("preloader CDC lacks bulk eps")
+                self._drain_greeting()
                 return True
             time.sleep(0.1)
         return False
 
-    # -- raw pipe ----------------------------------------------------
-    def _read(self, size):
-        while len(self.rxbuffer) < size:
+    def _drain_greeting(self):
+        """Discard the enumeration greeting blob, non-fatal, max 1 s.
+
+        The tool pushes ~511 bytes on enumeration; a stuck device-side TX
+        flush (UART "usbdl_flush timeout") was harmless in testing, so we
+        drain briefly at connect and never read again during the arm."""
+
+        deadline = time.time() + 1.0
+        total = 0
+        while time.time() < deadline:
             try:
-                chunk = self.ep_in.read(self.ep_in.wMaxPacketSize,
-                                        self.timeout * 1000)
-            except usb.core.USBError as error:
-                raise PreloaderBridgeError(
-                    "read failed: {} (tool window may have expired)".format(
-                        error))
+                chunk = self.ep_in.read(self.ep_in.wMaxPacketSize, 300)
+            except usb.core.USBError:
+                break
             if not len(chunk):
                 break
-            self.rxbuffer += bytes(chunk)
-        result, self.rxbuffer = self.rxbuffer[:size], self.rxbuffer[size:]
-        if len(result) < size:
-            raise PreloaderBridgeError(
-                "short read: wanted {} got {}".format(size, len(result)))
-        return result
+            total += len(chunk)
+        if total:
+            log("  drained {} greeting bytes from IN pipe".format(total))
 
     def _write(self, data):
         self.ep_out.write(data, self.timeout * 1000)
 
-    def _echo(self, value, size):
-        payload = _to_bytes(value, size)
-        self._write(payload)
-        reply = self._read(size)
-        if reply != payload:
-            raise PreloaderBridgeError(
-                "echo mismatch: sent {} got {}".format(
-                    payload.hex(), reply.hex()))
+    def _read_packet(self):
+        chunk = self.ep_in.read(self.ep_in.wMaxPacketSize, self.timeout * 1000)
+        if not len(chunk):
+            raise PreloaderBridgeError("empty read from tool IN pipe")
+        return bytes(chunk)
 
-    def _drain(self):
-        self.rxbuffer = b""
-
-    # -- protocol (0xD4 WRITE32 only; NO 0xD1 READ32 on this build) --
     def handshake(self):
-        self._write(b"\xA0")           # preloader variant lead byte
-        try:
-            self._read(1)
-        except PreloaderBridgeError:
-            pass                       # some builds answer the lead, some not
+        """Complement handshake with anchored last-byte semantics.
+
+        The tool mirrors host bytes back raw before/around protocol
+        replies, so 'last byte of a packet' matching (mtkclient
+        ep_in(maxinsize)[-1]) is the only reliable test; anchored loop
+        re-reading until the expected complement appears."""
+
+        self._write(b"\xA0")               # preloader variant lead byte
         i = 0
         while i < len(HANDSHAKE):
             self._write(HANDSHAKE[i:i + 1])
-            reply = self._read(1)
-            if reply and reply[0] == ~HANDSHAKE[i] & 0xFF:
+            expected = ~HANDSHAKE[i] & 0xFF
+            deadline = time.time() + self.timeout
+            matched = False
+            while time.time() < deadline:
+                try:
+                    last = self._read_packet()[-1]
+                except (usb.core.USBError, PreloaderBridgeError):
+                    break
+                if last == expected:
+                    matched = True
+                    break
+                if last == HANDSHAKE[i]:
+                    continue               # own mirror echo, keep reading
+            if matched:
                 i += 1
+            # otherwise keep sending the same byte from the start of the
+            # sequence (mtkclient resets i to 0 on mismatch)
             else:
                 i = 0
         log("Preloader handshake OK")
 
-    def liveness_probe(self):
-        """Optional GET_HW_CODE (0xFD); never fatal, drains any leftovers."""
+    def arm_brom_blind(self, misc_lock=DEFAULT_MISC_LOCK,
+                       timeout_s=DEFAULT_TIMEOUT_S):
+        """Write the full arm + TOPRGU reset as six frames, zero reads.
 
-        try:
-            self._echo(CMD_GET_HW_CODE, 1)
-            hw = self._read(2)
-            status = self._read(2)
-            log("Liveness: GET_HW_CODE echoed, hw=0x{} status=0x{}".format(
-                hw.hex(), status.hex()))
-        except PreloaderBridgeError as error:
-            log("Liveness: 0xFD not answered cleanly ({}) -- continuing "
-                "blind".format(error))
-        finally:
-            self._drain()
-
-    def write32(self, addr, value):
-        """Strict D4 write with mtkclient's echo+status checks."""
-
-        self._echo(CMD_WRITE32, 1)
-        self._echo(addr, 4)
-        self._echo(1, 4)               # one dword
-        arg_status = struct.unpack(">H", self._read(2))[0]
-        self._echo(value, 4)
-        status = struct.unpack(">H", self._read(2))[0]
-        if arg_status != 1 or status != 1:
-            raise PreloaderBridgeError(
-                "WRITE32 0x{:08X} rejected: arg_status={} status={}".format(
-                    addr, arg_status, status))
-
-    def arm_brom_and_reset(self, misc_lock=DEFAULT_MISC_LOCK,
-                           timeout_s=DEFAULT_TIMEOUT_S):
-        """Volatile BROM-mode arm + TOPRGU warm reset.  D4 writes only.
-
-        Returns list of (label, error) for steps that failed; the TOPRGU
-        reset is attempted whenever the flag write itself succeeded, so a
-        dead step never wastes the whole tool window silently.
+        Verified by outcome (reset verdict), not by protocol replies:
+        run 1 proved D4 frames are accepted; response parsing is what
+        the mirroring pipe breaks.  Returns nothing; USB write errors are
+        raised.
         """
 
         usbdlreg = brom_arm_value(timeout_s)
         usbdl_flag = misc_lock - 0x20
-        steps = [
+        frames = [
             ("watchdog disable", WDT_BASE, WDT_DISABLE_VALUE),
             ("misc unlock", misc_lock, MISC_MAGIC),
             ("wdt-resettable", misc_lock + 8, 1),
             ("misc relock", misc_lock, 0),
             ("usbdl BROM flag", usbdl_flag, usbdlreg),
+            ("TOPRGU SWRST", WDT_BASE + WDT_SWRST_OFFSET, WDT_SWRST_KEY),
         ]
-        failures = []
-        for label, addr, value in steps:
+        for label, addr, value in frames:
+            log("  send {} : 0x{:08X} <= 0x{:08X}".format(label, addr, value))
             try:
-                self.write32(addr, value)
-                log("  {} -> 0x{:08X} <= 0x{:08X}: accepted".format(
-                    label, addr, value))
-            except PreloaderBridgeError as error:
-                failures.append((label, str(error)))
-                log("  {} -> 0x{:08X} FAILED: {}".format(label, addr, error))
-        flag_ok = not any(label == "usbdl BROM flag" for label, _ in failures)
-        if flag_ok:
-            try:
-                self.write32(WDT_BASE + WDT_SWRST_OFFSET, WDT_SWRST_KEY)
-                log("TOPRGU SWRST issued")
-            except PreloaderBridgeError as error:
-                # The reset write can error out legitimately: the SoC
-                # resets before the echo returns.
-                log("SWRST write ended with: {} (a reset may already have "
-                    "happened)".format(error))
-        else:
-            log("usbdl flag write was rejected; NOT issuing reset")
-        return failures
+                self._write(write32_frame(addr, value))
+            except usb.core.USBError as error:
+                # An error on the SWRST frame is fine: the SoC resets
+                # before the transfer can complete.
+                if label == "TOPRGU SWRST":
+                    log("  SWRST transfer ended: {} (reset likely already "
+                        "happened)".format(error))
+                else:
+                    raise PreloaderBridgeError(
+                        "{} transfer failed: {}".format(label, error))
+        log("Arm + reset frames sent (no response reads; verdict follows)")
 
 
 def _watch_reset(deadline_s=50.0):
-    """After the SWRST: classify what comes back.
+    """After the reset frames: classify what enumerates.
 
     Returns 'success' (0003), 'flag_ignored' (2000 returned after a gap),
-    'writes_noop' (2000 never even blinked), or 'booted'/'timeout'."""
+    'writes_noop' (2000 never blinked), 'booted' or 'timeout'."""
 
     deadline = time.time() + deadline_s
     seen_gap = False
@@ -315,8 +301,9 @@ def _watch_reset(deadline_s=50.0):
                     "but the BROM ignored the flag at this address")
                 return "flag_ignored"
             if time.time() > deadline - deadline_s + 32:
-                log("  preloader never blinked: our register writes were "
-                    "no-ops (DAA-gated tool?); NOT retrying other addresses")
+                log("  preloader never blinked: the arm/reset frames had no "
+                    "effect (tool accepted but gated?); NOT retrying other "
+                    "addresses")
                 return "writes_noop"
         time.sleep(0.25)
     log("  no BROM/preloader verdict within the window")
@@ -350,13 +337,11 @@ def bridge_to_brom(misc_lock=DEFAULT_MISC_LOCK, first_window_deadline=None):
             attempt, len(candidates), candidate))
         try:
             dev.handshake()
-            dev.liveness_probe()
-            dev.arm_brom_and_reset(misc_lock=candidate)
-        except PreloaderBridgeError as error:
+            dev.arm_brom_blind(misc_lock=candidate)
+        except (PreloaderBridgeError, usb.core.USBError) as error:
             log("attempt {} failed before reset: {}".format(attempt, error))
             if attempt == 1:
-                # The window is burned; the preloader will boot normally.
-                log("tool window is spent; the preloader will now boot the "
+                log("tool window may be spent; the preloader will boot the "
                     "OS (one boot_count consumed)")
             return False
         dev = None  # endpoints die at the reset; force fresh instance
@@ -364,10 +349,6 @@ def bridge_to_brom(misc_lock=DEFAULT_MISC_LOCK, first_window_deadline=None):
         if verdict == "success":
             return True
         if verdict != "flag_ignored":
-            if verdict == "writes_noop":
-                log("This unit's tool mode accepted the handshake but "
-                    "ignored register writes -- misc_lock guessing cannot "
-                    "fix that; the DAA gate is the blocker.")
             return False
     log("all misc_lock candidates ignored; try the keypad-GPIO "
         "button-equivalent next")

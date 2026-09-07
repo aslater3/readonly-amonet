@@ -144,22 +144,20 @@ BROM mode, following mtkclient's `reset_to_brom` mechanism:
 1. wait for `0e8d:2000` (plug in or power the device; the window is ~10 s
    per boot — start the tool first and it waits for you);
 2. handshake (preloader variant: extra leading `0xA0`);
-3. WRITE32-only register sequence (this build's READ32 is not answered —
-   the first hardware test proved 0xD1 hangs the tool for 8 s and burns
-   the window): watchdog disable, misc unlock, watchdog-resettable,
-   relock, then the volatile usbdl flag (`0x444C` magic, enable bit,
-   "handled by BROM" clear) that asks the **BROM itself** to enter
-   download mode after a warm reset — the state the missing button would
-   have produced;
-4. trigger the TOPRGU software reset;
-5. classify what enumerates:
+3. after the handshake, **blind WRITE32 frames with zero reads**: the
+   tool mirrors host bytes back with lag (echo-only semantics), so
+   response parsing cannot be trusted; five D4 frames (watchdog disable,
+   misc unlock, watchdog-resettable, relock, volatile usbdl flag —
+   `0x444C` magic, enable bit, "handled by BROM" clear) plus the TOPRGU
+   SWRST frame go out back-to-back in well under a second;
+4. the outcome IS the verification:
    * `0e8d:0003` → success, the normal dump flow continues;
-   * `0e8d:2000` back after a gap → the BROM ignored the flag at that
-     address; the tool re-handshakes on the same power-up (no OS boot,
-     no boot_count cost) and automatically retries the next candidate:
-     `0x10001838`, `0x1000141C`, `0x1001a100`;
-   * `0e8d:2000` never blinked → our writes were no-ops (DAA-gated tool
-     mode); the bridge stops instead of wasting further windows.
+   * `0e8d:2000` back after a gap → the SoC reset but the BROM ignored
+     the flag at that address; the tool re-handshakes on the same
+     power-up (no OS boot, no boot_count cost) and automatically retries
+     the next candidate: `0x10001838`, `0x1000141C`, `0x1001a100`;
+   * `0e8d:2000` never blinked → the frames had no effect; the bridge
+     stops instead of wasting further windows.
 
 ```bash
 python3 modules/dump.py --via-preloader dump
