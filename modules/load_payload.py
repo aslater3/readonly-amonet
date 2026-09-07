@@ -12,7 +12,6 @@ from brom_diag import describe_status_error, log_brom_identity
 from kamakiri_v1 import kamakiri_v1
 
 import usb.core
-import usb.util
 
 import struct
 import os
@@ -88,41 +87,34 @@ def load_payload(device):
 
     # Diagnostic notice for the operator: the target exposes a boot-time UART
     # on 0x11005000 at 921600 8N1 (preloader LOG_COM, ATF log, kernel
-    # earlycon).  The payload no longer uses it, but attach a reader there to
-    # capture first-hand payload diagnostics if a run misbehaves.
+    # earlycon).  Stage 1 is USB-only, but the stock console remains useful if
+    # a later stage needs first-hand diagnostics.
     log("Diagnostic note: attach a UART reader on the debug pads at 921600 8N1 "
-        "for first-hand payload boot diagnostics (not required for dumping)")
+        "for first-hand boot diagnostics (not required for dumping)")
 
     # This BROM (hwcode 0x8167, hw_sub 0x8a00, hw_ver 0xcb00, sw 0x1)
     # deterministically rejects the linecode/0xDA exploit family with status
     # 0x1A1D on both known parameter variants (verified on hardware 2026-09).
     # The proven-on-this-BROM flow is kamakiri v1: SEND_CERT upload + wIndex
     # 0xCC trigger (bypass_utility issue #25, April 2021).
-    kamakiri_v1(device, stage1)
-
+    #
+    # Do not reset or clear-halt the USB device between the exploit trigger and
+    # the stage-1 sync.  The upstream MT8167 v1 path reads A1A2A3A4 directly;
+    # endpoint CLEAR_FEATURE changes the bulk endpoint data-toggle state and can
+    # destroy the very first packet emitted by stage 1 on some host controllers.
+    old_allow_usb_reset = getattr(device, "allow_usb_reset", True)
+    old_timeout = getattr(device, "timeout", 1)
+    device.allow_usb_reset = False
+    device.timeout = 3
     try:
-        device.dev.timeout = 1
-    except Exception:
-        pass
+        kamakiri_v1(device, stage1)
 
-    # The injection STALLs the BROM's EP0 (hence the swallowed [Errno 32]
-    # above).  Some host controllers (xHCI) also halt the CDC bulk endpoints
-    # or wedge their data toggles in that case; clear the halt state so the
-    # stage-1 sync read below is not dropped by the HOST rather than the
-    # device.  Failures here are non-fatal: on controllers that never halted
-    # the endpoints there is nothing to clear.
-    try:
-        cdc_if = usb.util.find_descriptor(
-            device.udev.get_active_configuration(), bInterfaceClass=0x0A
-        )
-        for endpoint in cdc_if:
-            if usb.util.endpoint_direction(endpoint.bEndpointAddress) == usb.util.ENDPOINT_IN:
-                device.udev.clear_halt(endpoint.bEndpointAddress)
-    except Exception as e:
-        print("clear_halt skipped: {}".format(e))
+        log("Waiting for stage 1 to come online...")
+        data = device.read(4)
+    finally:
+        device.timeout = old_timeout
+        device.allow_usb_reset = old_allow_usb_reset
 
-    log("Waiting for stage 1 to come online...")
-    data = device.read(4)
     if data != b"\xA1\xA2\xA3\xA4":
         raise RuntimeError("received {} instead of expected pattern".format(data))
 
