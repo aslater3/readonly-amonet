@@ -111,6 +111,23 @@ is a host-side setup error and does not start device access.
 Keep the USB cable connected. Enter the target's MTK BROM mode using the
 board-specific service/test-point procedure. The host should see `0e8d:0003`.
 
+### BROM entry via eMMC short (disassembled device)
+
+When the action button is not reachable, enter BROM by preventing boot0
+loading: short the eMMC clock line to ground **before and during** power-on.
+
+1. Start the dumper first — it prints `Waiting for device` and polls, so
+   there is no race. The short-removal prompt appears.
+2. Attach the short (eMMC CLK to GND), then plug in USB.
+3. Wait for `Found device = 0e8d:0003` in the dumper output.
+4. **Remove the short**, then press Enter at the prompt.
+
+Removing the short before pressing Enter is mandatory: the dump itself needs
+working eMMC access. The BROM halts into its usbdl wait state on a shorted
+boot (UART shows `System halt!`) and stays there indefinitely, so there is no
+timing pressure. Shorted entries never load boot0, so the IDME/RPMB boot
+counter is not consumed by failed or repeated attempts.
+
 From the repository root, run:
 
 ```bash
