@@ -70,6 +70,17 @@ sure the active user can access the device through the host's udev rules, or
 run the command with the required host permissions. Do not connect multiple
 MediaTek targets at the same time.
 
+Stop any daemon that claims CDC-class serial interfaces before a run:
+
+```bash
+sudo systemctl stop ModemManager brltty 2>/dev/null || true
+```
+
+These drivers bind CDC interfaces regardless of VID:PID and can starve the
+device's USB transmit path (`usbdl_flush timeout` loops in preloader logs are
+the symptom), leaving nothing for the dumper's libusb handle to exchange.
+
+
 ## Build the BROM payloads
 
 From the repository root:
