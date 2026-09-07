@@ -260,3 +260,42 @@ def test_kamakiri_v1_spray_plants_little_endian_payload_pointer() -> None:
     wire = struct.pack(">I", sprayed)  # write32 wire encoding
     assert wire == b"\x00\x0a\x10\x00"
     assert struct.unpack("<I", wire)[0] == kamakiri_v1.PAYLOAD_ADDRESS
+
+
+def test_preloader_arm_value_matches_mtkclient_reset_to_brom_semantics() -> None:
+    # The volatile BROM arm must carry the 0x444C magic, a second-granularity
+    # timeout in the 14-bit field, the download-enable bit SET, and the
+    # "handled by bootloader" bit CLEAR (mtkclient USBDL_* constants).
+    import preloader_entry as bridge
+
+    value = bridge.brom_arm_value(timeout_s=600)
+    assert value & 0xFFFF0000 == 0x444C0000, "BROM checks the 0x444C magic"
+    assert value & bridge.USBDL_BIT_EN, "download bit must be enabled"
+    assert not value & bridge.USBDL_BROM, "flag 0 => BROM owns next usbdl"
+    assert (value & bridge.USBDL_TIMEOUT_MASK) >> 2 == 600
+    # misc_flag/flag layout used by mtkclient: flag = misc_lock - 0x20
+    assert bridge.DEFAULT_MISC_LOCK - 0x20 == 0x10002030
+
+
+def test_preloader_bridge_is_volatile_only(tmp_path: Path) -> None:
+    # Safety: the bridge writes registers only -- no DA upload, no JUMP,
+    # no RPMB, no eMMC command, and no partition access.  AST-based so
+    # documentation prose is not mistaken for code.
+    source = (MODULES / "preloader_entry.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    called = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    forbidden_calls = {"send_da", "jump_da", "emmc_write", "rpmb_read",
+                       "rpmb_write", "cmd_da", "emmc_switch", "reboot"}
+    assert not called & forbidden_calls, called & forbidden_calls
+    integers = {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, int)
+    }
+    # DA upload (0xD7) and DA jump (0xD5) protocol bytes must never be sent.
+    assert 0xD7 not in integers and 0xD5 not in integers
+    assert "bridge_to_brom" in source

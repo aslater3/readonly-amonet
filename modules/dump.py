@@ -342,7 +342,26 @@ def dump_partition(
     print(f"  {partition.name}: complete" + " " * 20, flush=True)
 
 
-def _run_dump(output_dir: Path, overwrite: bool) -> int:
+def _enter_brom(via_preloader: bool, misc_lock: int) -> None:
+    """Optionally bridge the device into BROM (0e8d:0003) before probing."""
+
+    if not via_preloader:
+        return
+    from preloader_entry import bridge_to_brom, PreloaderBridgeError
+
+    log("Attempting preloader(0e8d:2000) -> BROM(0e8d:0003) bridge")
+    try:
+        if not bridge_to_brom(misc_lock=misc_lock):
+            raise RuntimeError(
+                "preloader bridge did not produce 0e8d:0003; see log for the "
+                "misc_lock candidate to try next"
+            )
+    except PreloaderBridgeError as error:
+        raise RuntimeError(f"preloader bridge failed: {error}") from error
+
+
+def _run_dump(output_dir: Path, overwrite: bool,
+              via_preloader: bool = False, misc_lock: int = 0x10002050) -> int:
     """Run the device operation inside the already-configured log capture."""
 
     module_dir = Path(__file__).resolve().parent
@@ -357,6 +376,7 @@ def _run_dump(output_dir: Path, overwrite: bool) -> int:
         )
 
     log("Starting read-only partition dumper")
+    _enter_brom(via_preloader, misc_lock)
     original_cwd = Path.cwd()
     try:
         # load_payload.py retains the upstream relative paths.  Keep that
@@ -414,10 +434,11 @@ def _run_dump(output_dir: Path, overwrite: bool) -> int:
     return 0
 
 
-def _run_probe() -> int:
+def _run_probe(via_preloader: bool = False, misc_lock: int = 0x10002050) -> int:
     """Read-only BROM introspection: no payload, no exploit, no writes."""
 
     log("Starting read-only BROM probe")
+    _enter_brom(via_preloader, misc_lock)
     module_dir = Path(__file__).resolve().parent
     original_cwd = Path.cwd()
     try:
@@ -465,6 +486,27 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="run read-only BROM identity/log probes and exit without dumping",
     )
+    parser.add_argument(
+        "--via-preloader",
+        action="store_true",
+        help=(
+            "enter BROM via the preloader tool window (0e8d:2000): wait for "
+            "the device to enumerate after power-on, arm the volatile usbdl "
+            "flag, watchdog-reset, and wait for 0e8d:0003 before continuing. "
+            "Use when button BROM entry is unavailable. Register writes are "
+            "RAM-only; nothing persistent is modified."
+        ),
+    )
+    parser.add_argument(
+        "--misc-lock",
+        type=lambda text: int(text, 16),
+        default=0x10002050,
+        help=(
+            "TOPRGU misc_lock register used by --via-preloader "
+            "(hex). Default 0x10002050 (MT8163-adjacent value). Fallbacks "
+            "to try if BROM never enumerates: 0x10001838, 0x1000141C."
+        ),
+    )
     args = parser.parse_args(argv)
 
     output_dir: Path = args.output_directory.expanduser()
@@ -492,9 +534,17 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Output directory: {output_dir}", flush=True)
                 try:
                     if args.probe_only:
-                        result = _run_probe()
+                        result = _run_probe(
+                            via_preloader=args.via_preloader,
+                            misc_lock=args.misc_lock,
+                        )
                     else:
-                        result = _run_dump(output_dir, args.overwrite)
+                        result = _run_dump(
+                            output_dir,
+                            args.overwrite,
+                            via_preloader=args.via_preloader,
+                            misc_lock=args.misc_lock,
+                        )
                 except KeyboardInterrupt:
                     traceback.print_exc()
                     print("Interrupted; no reboot was requested by dump.py.", flush=True)

@@ -134,6 +134,40 @@ the BROM completes USB download initialization and waits for usbdl traffic
 BROM entry currently has no confirmed method on this unit; do not rely on
 shorted halts.
 
+### Preloader bridge entry when the button is unavailable (`--via-preloader`)
+
+The preloader tool window (`0e8d:2000`, "Tool connection is unlocked" on
+UART) enumerates on every normal power-on and speaks the same usbdl
+protocol as the BROM. `--via-preloader` uses it as a button-free door into
+BROM mode, following mtkclient's `reset_to_brom` mechanism:
+
+1. wait for `0e8d:2000` (plug in or power the device; the window is ~10 s
+   per boot — start the tool first and it waits for you);
+2. handshake (preloader variant: extra leading `0xA0`);
+3. disable the watchdog via the TOPRGU MODE register;
+4. unlock misc-base, make a watchdog reset possible, relock;
+5. write the volatile usbdl flag (`0x444C` magic, enable bit, "handled by
+   BROM" clear) so the **BROM itself** enters download mode after a warm
+   reset — which is exactly the state the missing button would have
+   produced;
+6. trigger the TOPRGU software reset;
+7. wait for `0e8d:0003` and continue with the normal dump flow.
+
+```bash
+python3 modules/dump.py --via-preloader dump
+```
+
+Everything this path touches is volatile register state — no flash, RPMB,
+or other persistent write; removing power clears the arm.
+
+**Unverified on this exact BROM build.** mtkclient ships no `misc_lock`
+address for hwcode 0x8167; the default `0x10002050` is the value from the
+MT8163/MT8127/MT8135 family blocks in the same config. If BROM never
+enumerates after the reset, watch the UART: a normal `Jump to BL` boot
+means the BROM did not honour the flag at that address — retry with
+`--misc-lock 0x10001838`, then `--misc-lock 0x1000141C`. A UART that shows
+a reset with no further output but `0e8d:0003` on the host is success.
+
 From the repository root, run:
 
 ```bash
