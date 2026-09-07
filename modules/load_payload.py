@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import sys
 import time
+from pathlib import Path
 
 import usb
 import array
@@ -15,6 +16,9 @@ import usb.core
 
 import struct
 import os
+
+ROOT = Path(__file__).resolve().parents[1]
+BROM_PAYLOAD = ROOT / "brom-payload"
 
 def da_read(device, linecode, address, length, check_result = True):
     return da_read_write(device, linecode, 0, address, length, None, check_result)
@@ -80,7 +84,7 @@ def load_payload(device):
         device.write32(0x10007008, 0x1971) # low-level watchdog kick
         time.sleep(1)
 
-    stage1 = load_payload_file("../brom-payload/stage1/stage1.bin")
+    stage1 = load_payload_file(BROM_PAYLOAD / "stage1" / "stage1.bin")
 
     if len(stage1) >= 0xA00:
         raise RuntimeError("payload too large")
@@ -121,7 +125,7 @@ def load_payload(device):
     device.kick_watchdog()
 
     log("Load 2nd stage payload")
-    stage2 = load_payload_file("../brom-payload/stage2/stage2.bin")
+    stage2 = load_payload_file(BROM_PAYLOAD / "stage2" / "stage2.bin")
 
     log("Send 2nd stage payload")
     # magic
