@@ -86,6 +86,13 @@ def load_payload(device):
     if len(stage1) >= 0xA00:
         raise RuntimeError("payload too large")
 
+    # Diagnostic notice for the operator: the target exposes a boot-time UART
+    # on 0x11005000 at 921600 8N1 (preloader LOG_COM, ATF log, kernel
+    # earlycon).  The payload no longer uses it, but attach a reader there to
+    # capture first-hand payload diagnostics if a run misbehaves.
+    log("Diagnostic note: attach a UART reader on the debug pads at 921600 8N1 "
+        "for first-hand payload boot diagnostics (not required for dumping)")
+
     # This BROM (hwcode 0x8167, hw_sub 0x8a00, hw_ver 0xcb00, sw 0x1)
     # deterministically rejects the linecode/0xDA exploit family with status
     # 0x1A1D on both known parameter variants (verified on hardware 2026-09).
