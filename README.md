@@ -111,22 +111,28 @@ is a host-side setup error and does not start device access.
 Keep the USB cable connected. Enter the target's MTK BROM mode using the
 board-specific service/test-point procedure. The host should see `0e8d:0003`.
 
-### BROM entry via eMMC short (disassembled device)
+### eMMC-short boots halt BEFORE USB init (verified 2026-09)
 
-When the action button is not reachable, enter BROM by preventing boot0
-loading: short the eMMC clock line to ground **before and during** power-on.
+Shorting the eMMC clock line prevents boot0 loading, and the BROM UART shows
+staged retries (`F3: 4000 00E0`, `F2: 3000 00A6`, progress `00→03`) ending in
+`System halt!`. However, on this MT8167 BROM build that halt happens **before
+the BROM initializes its USB download device**: `lsusb`/`dmesg` show no
+`0e8d:0003`, and no host driver ever sees the device. A shorted halt is
+therefore **not a usable BROM-mode entry** on its own.
 
-1. Start the dumper first — it prints `Waiting for device` and polls, so
-   there is no race. The short-removal prompt appears.
-2. Attach the short (eMMC CLK to GND), then plug in USB.
-3. Wait for `Found device = 0e8d:0003` in the dumper output.
-4. **Remove the short**, then press Enter at the prompt.
+Observed recovery behavior: removing the short lets the halted BROM continue
+when power is cycled or the short is cleared, proceeding to load boot0
+normally (`Jump to BL` on UART). This confirms the short genuinely blocks
+boot0 and that the halt is recoverable — it just never reaches usbdl init.
 
-Removing the short before pressing Enter is mandatory: the dump itself needs
-working eMMC access. The BROM halts into its usbdl wait state on a shorted
-boot (UART shows `System halt!`) and stays there indefinitely, so there is no
-timing pressure. Shorted entries never load boot0, so the IDME/RPMB boot
-counter is not consumed by failed or repeated attempts.
+### Button-based entry (when the button is reachable)
+
+The proven `0e8d:0003` enumeration path on this device family is the
+button/power-on method: hold the action button before and during power-on so
+the BROM completes USB download initialization and waits for usbdl traffic
+(`0e8d:0003` present, no timing pressure). If the button is not reachable,
+BROM entry currently has no confirmed method on this unit; do not rely on
+shorted halts.
 
 From the repository root, run:
 
