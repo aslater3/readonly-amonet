@@ -364,6 +364,13 @@ def _enter_brom(via_preloader: bool, misc_lock: int) -> None:
             "report it -- fastboot operations are a separate, explicitly "
             "authorised workflow."
         )
+    if verdict == "booted_os":
+        raise RuntimeError(
+            "the mode request did not gate the boot: the device booted "
+            "its OS normally (a non-fastboot 0e8d gadget such as "
+            "0e8d:2008/AEOOT enumerated). This preloader ignores USB "
+            "mode requests; see README for the UART tool-sync route."
+        )
     raise RuntimeError(
         "preloader bridge did not produce 0e8d:0003; see log for the "
         "verdict and next candidate"

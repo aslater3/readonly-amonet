@@ -319,3 +319,44 @@ def test_preloader_bridge_is_volatile_only(tmp_path: Path) -> None:
     assert 0xD7 not in integers and 0xD5 not in integers
     assert 0xD1 not in integers
     assert "bridge_to_brom" in source
+
+
+def test_tool_command_framing_supports_512byte_frames() -> None:
+    # UART proves the Studio tool counts received bytes against a full
+    # 512-byte frame ("USB_HANDSHAKE: should be N bytes less than 512
+    # bytes"), so the bridge must be able to zero-pad the mode command
+    # to 512 bytes and must reject commands too long for a frame.
+    import preloader_entry as bridge
+
+    dev = bridge.PreloaderDevice.__new__(bridge.PreloaderDevice)
+    sent = []
+    dev._write = sent.append
+    dev.send_command("FACTFACT", pad_to=512)
+    assert len(sent[0]) == 512
+    assert sent[0].startswith(b"FACTFACT")
+    assert sent[0].endswith(b"\x00")
+    dev.send_command("FACTFACT")
+    assert sent[1] == b"FACTFACT"
+    try:
+        dev.send_command("X" * 513, pad_to=512)
+    except bridge.PreloaderBridgeError:
+        pass
+    else:
+        raise AssertionError("oversized padded command was not rejected")
+
+
+def test_fastboot_verdict_requires_interface_signature() -> None:
+    # Regression: an earlier classifier called ANY non-BROM 0e8d PID
+    # "fastboot" and reported 0e8d:2008 -- the booted-OS AEOOT gadget --
+    # as factory fastboot. Classification must key on the ff/42/03
+    # interface signature and report a booted OS otherwise.
+    import inspect
+
+    import preloader_entry as bridge
+
+    src = inspect.getsource(bridge._watch_verdict)
+    assert "booted_os" in src
+    assert "_other_stage_is_fastboot" in src
+    assert bridge.FASTBOOT_CLASS == 0xFF
+    assert bridge.FASTBOOT_SUBCLASS == 0x42
+    assert bridge.FASTBOOT_PROTOCOL == 0x03

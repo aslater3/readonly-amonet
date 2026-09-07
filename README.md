@@ -150,9 +150,13 @@ stage. The bridge therefore:
 2. reads until a `READY` token, then sends `FACTFACT`;
 3. classifies the re-enumeration:
    * `0e8d:0003` → BROM download mode; the dump continues immediately;
-   * any other `0e8d` PID → factory fastboot stage; the dumper stops
-     here (read-only scope) and asks you to report the state —
+   * an `0e8d` device whose interfaces match the fastboot signature
+     (`ff/42/03`) → factory fastboot stage; the dumper stops here
+     (read-only scope) and asks you to report the state —
      fastboot use is a separate explicitly authorised workflow;
+   * a non-fastboot `0e8d` gadget such as `0e8d:2008` ("AEOOT") →
+     the device simply **booted its OS normally**; the mode request did
+     not take effect and the verdict says so honestly;
    * `0e8d:2000` returns unchanged → command ignored: the bridge falls
      back on the same power-up to the volatile register arm (mtkclient
      `reset_to_brom`): blind `0xD4` WRITE32 frames — watchdog disable,
@@ -161,6 +165,29 @@ stage. The bridge therefore:
      then TOPRGU SWRST — verified by the enumeration verdict, retrying
      `misc_lock` candidates `0x10001838`, `0x1000141C`, `0x1001a100`;
    * device disappears and nothing MTK returns → it booted normally.
+
+**Framing finding (hardware-confirmed).** On this unit the tool counts
+received bytes against a full frame: the UART printed
+`USB_HANDSHAKE: should be 8 bytes less than 512 bytes` — exactly the
+8 bytes of a raw `FACTFACT`. The Dot-era client writes the bare 8 bytes
+and works; this preloader apparently buffers them waiting for the rest
+of a 512-byte frame, times out (`usb listen timeout` →
+`cannot detect tools!`) and boots normally. The bridge therefore sends
+`FACTFACT` raw first, then — after a *booted OS* verdict and a fresh
+power-cycle — retries it zero-padded to a full 512-byte frame. If even
+a complete frame boots the OS, this preloader does not honour USB mode
+requests at all.
+
+**UART tool-sync fallback.** The same UART log shows the preloader
+checking a *second* tool channel after USB fails:
+`[TOOL] <UART> wait sync time 150ms->5ms` → `receieved data: ()`. It
+waits for the MTK sync sequence (`a0 0a 50 05`) on the console port
+(`0x11005000`, 921600 8N1) and boots when nothing answers. If that
+channel answers with the byte-wise complements (`5f f5 af fa`) the
+preloader stays in command mode — a button-free door. Use
+`modules/uart_tool_sync.py <console-port>`: it is observe-only unless
+you pass `--send-sync`, and it never sends anything beyond the four
+sync bytes. Analyse whatever comes back before any follow-up command.
 
 ```bash
 python3 modules/dump.py --via-preloader dump

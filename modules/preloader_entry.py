@@ -205,9 +205,14 @@ class PreloaderDevice:
         raise PreloaderBridgeError("no READY token within {:.0f}s".format(
             deadline_s))
 
-    def send_command(self, command):
+    def send_command(self, command, pad_to=0):
         payload = command.encode("ascii", "ignore")
-        log("  sending tool command {!r}".format(command))
+        if pad_to:
+            if len(payload) > pad_to:
+                raise PreloaderBridgeError("command longer than frame")
+            payload = payload.ljust(pad_to, b"\x00")
+        log("  sending tool command {!r}{}".format(
+            command, f" padded to {pad_to}B frame" if pad_to else ""))
         self._write(payload)
 
     # ---- secondary: volatile register arm (blind, verified by outcome) --
@@ -242,6 +247,29 @@ def _usb_present(*pids):
                for p in pids)
 
 
+FASTBOOT_CLASS, FASTBOOT_SUBCLASS, FASTBOOT_PROTOCOL = 0xFF, 0x42, 0x03
+
+
+def _is_fastboot(device):
+    """True iff any interface matches the Android fastboot USB signature.
+
+    Fastboot is identified by interface class ff/42/03 (01 on some LK
+    builds), NOT by PID: 0e8d:2008 is just this device's booted-OS
+    gadget ("AEOOT") and must never be reported as fastboot.
+    """
+
+    try:
+        cfg = device.get_active_configuration()
+    except usb.core.USBError:
+        return False
+    for intf in cfg:
+        if (intf.bInterfaceClass == FASTBOOT_CLASS
+                and intf.bInterfaceSubClass == FASTBOOT_SUBCLASS
+                and intf.bInterfaceProtocol in (FASTBOOT_PROTOCOL, 0x01)):
+            return True
+    return False
+
+
 def _other_mtk_stages():
     """List (vid,pid) of every 0e8d device that is NOT preloader/BROM."""
 
@@ -252,26 +280,50 @@ def _other_mtk_stages():
     return found
 
 
+def _other_stage_is_fastboot():
+    for device in usb.core.find(find_all=True, idVendor=MTK_VID):
+        if device.idProduct in (PRELOADER_PID, BROM_PID):
+            continue
+        if _is_fastboot(device):
+            return True
+    return False
+
+
 def _watch_verdict(deadline_s=60.0):
     """Classify enumeration after a command/reset.
 
-    Returns 'brom', 'fastboot' (any other 0e8d PID enumerated -- the
-    factory LK stage on amonet-family Echos), 'preloader_back',
-    'gone_booting', 'timeout'.
+    Returns 'brom', 'fastboot' (ff/42/03 interface signature only),
+    'booted_os' (a non-BROM 0e8d device that is NOT fastboot, e.g. the
+    2008/AEOOT FireOS gadget -> mode request did not gate the boot),
+    'preloader_back', 'gone_booting', 'timeout'.
     """
 
     deadline = time.time() + deadline_s
     seen_gap = False
     gone_since = None
+    other_since = None
     while time.time() < deadline:
         if _usb_present(BROM_PID):
             log("  verdict: BROM 0e8d:0003 is up")
             return "brom"
         others = _other_mtk_stages()
         if others:
-            log("  verdict: another MTK stage enumerated: {}".format(
-                ", ".join("0e8d:{:04x}".format(p) for p in others)))
-            return "fastboot"
+            names = ", ".join("0e8d:{:04x}".format(p) for p in others)
+            if _other_stage_is_fastboot():
+                log("  verdict: FASTBOOT stage (ff/42/03) at {}".format(
+                    names))
+                return "fastboot"
+            # Booted-OS gadget (e.g. 2008 AEOOT): hold the observation
+            # open briefly in case fastboot enumerates right behind it,
+            # then classify as a normal boot.
+            other_since = other_since or time.time()
+            if time.time() - other_since > 5.0:
+                log("  verdict: {} is up but is not fastboot -> device "
+                    "booted the OS normally (mode request did not take "
+                    "effect)".format(names))
+                return "booted_os"
+        else:
+            other_since = None
         if _usb_present(PRELOADER_PID):
             if seen_gap:
                 log("  verdict: preloader came back -> mode request ignored")
@@ -308,15 +360,41 @@ def bridge_to_brom(misc_lock=DEFAULT_MISC_LOCK, tool_cmd=DEFAULT_TOOL_CMD,
         return False
 
     # Stage 1: documented Amazon mode request over the READY protocol.
-    try:
-        dev.wait_ready()
-        dev.send_command(tool_cmd)
-    except (PreloaderBridgeError, usb.core.USBError) as error:
-        log("stage 1 (READY/{}) failed: {}".format(tool_cmd, error))
+    # Hardware evidence: UART prints "USB_HANDSHAKE: should be 8 bytes
+    # less than 512 bytes" exactly when we sent the 8-byte FACTFACT --
+    # i.e. N is the byte count the tool received and it wants a FULL
+    # 512-byte frame. A bare 8-byte write sits buffered until the listen
+    # timer expires ("usb listen timeout / cannot detect tools!") and
+    # the preloader boots normally. Try raw first (xyzz Dot behaviour),
+    # then zero-padded to a 512-byte frame on a fresh window.
+    frames = [0, 512] if len(tool_cmd.encode("ascii", "ignore")) < 512 \
+        else [0]
+    verdict = "timeout"
+    for pad_to in frames:
+        try:
+            dev.wait_ready()
+            dev.send_command(tool_cmd, pad_to=pad_to)
+        except (PreloaderBridgeError, usb.core.USBError) as error:
+            log("stage 1 (READY/{}, {} frame) failed: {}".format(
+                tool_cmd, f"{pad_to}B" if pad_to else "raw", error))
+            return False
+        verdict = _watch_verdict()
+        if verdict in ("brom", "fastboot"):
+            return verdict
+        if verdict == "booted_os" and pad_to == 0 and len(frames) > 1:
+            log("raw command left the tool waiting for 504 more bytes; "
+                "power-cycle the device and the run will retry with a "
+                "512-byte frame automatically")
+            dev = PreloaderDevice()
+            if not dev.find(deadline=time.time() + 180):
+                log("no fresh tool window appeared; rerun and power-cycle")
+                return False
+            continue
+        break               # preloader_back / gone_booting / timeout
+    if verdict == "booted_os":
+        log("mode request did not gate the boot even as a full 512B "
+            "frame -- this preloader does not honour it over USB")
         return False
-    verdict = _watch_verdict()
-    if verdict in ("brom", "fastboot"):
-        return verdict
 
     # Stage 2: volatile register arm, only if we can still talk to the
     # same-window preloader (it came back) -- same power-up, no OS boot.
