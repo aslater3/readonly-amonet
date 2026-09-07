@@ -275,12 +275,29 @@ def test_preloader_arm_value_matches_mtkclient_reset_to_brom_semantics() -> None
     assert (value & bridge.USBDL_TIMEOUT_MASK) >> 2 == 600
     # misc_flag/flag layout used by mtkclient: flag = misc_lock - 0x20
     assert bridge.DEFAULT_MISC_LOCK - 0x20 == 0x10002030
+    # candidate ordering: primary first, no duplicates
+    assert bridge.misc_lock_candidates(0x10001838) == [
+        0x10001838, 0x10002050, 0x1000141C, 0x1001a100]
+
+
+def test_preloader_tool_protocol_is_amonet_ready_factfact() -> None:
+    # Hardware trace 2026-09-07: the Amazon tool window sends a 5-byte
+    # preamble (5e 0a ca d7 83) then ASCII READY forever; amonet's
+    # handshake2 waits for 'Y' and writes the mode command.  The bridge
+    # must speak THAT protocol (READY-wait + FACTFACT), and the arm
+    # frames must be big-endian D4 WRITE32 layouts.
+    import preloader_entry as bridge
+
+    assert bridge.READY_TOKEN == b"READY"
+    assert bridge.DEFAULT_TOOL_CMD == "FACTFACT"
+    frame = bridge.write32_frame(0x10002030, 0x444C0961)
+    assert frame == bytes.fromhex("d4" + "10002030" + "00000001" + "444c0961")
 
 
 def test_preloader_bridge_is_volatile_only(tmp_path: Path) -> None:
-    # Safety: the bridge writes registers only -- no DA upload, no JUMP,
-    # no RPMB, no eMMC command, and no partition access.  AST-based so
-    # documentation prose is not mistaken for code.
+    # Safety: the bridge writes registers / sends the mode string only --
+    # no DA upload, no JUMP, no eMMC command, no partition access.
+    # AST-based so documentation prose is not mistaken for code.
     source = (MODULES / "preloader_entry.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     called = {
@@ -296,9 +313,9 @@ def test_preloader_bridge_is_volatile_only(tmp_path: Path) -> None:
         for node in ast.walk(tree)
         if isinstance(node, ast.Constant) and isinstance(node.value, int)
     }
-    # DA upload (0xD7), DA jump (0xD5) and READ32 (0xD1) protocol bytes must
-    # never be sent: READ32 hung for 8s on hardware and burned the tool
-    # window, so this bridge is WRITE32-only.
+    # DA upload (0xD7), DA jump (0xD5) and READ32 (0xD1) protocol bytes
+    # must never be sent (mirroring pipe makes reads pointless; DAs need
+    # keys we lack).
     assert 0xD7 not in integers and 0xD5 not in integers
     assert 0xD1 not in integers
     assert "bridge_to_brom" in source

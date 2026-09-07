@@ -349,15 +349,25 @@ def _enter_brom(via_preloader: bool, misc_lock: int) -> None:
         return
     from preloader_entry import bridge_to_brom, PreloaderBridgeError
 
-    log("Attempting preloader(0e8d:2000) -> BROM(0e8d:0003) bridge")
+    log("Attempting preloader(0e8d:2000) tool-window bridge")
     try:
-        if not bridge_to_brom(misc_lock=misc_lock):
-            raise RuntimeError(
-                "preloader bridge did not produce 0e8d:0003; see log for the "
-                "misc_lock candidate to try next"
-            )
+        verdict = bridge_to_brom(misc_lock=misc_lock)
     except PreloaderBridgeError as error:
         raise RuntimeError(f"preloader bridge failed: {error}") from error
+    if verdict == "brom":
+        log("Bridge reached BROM 0e8d:0003; continuing with the dump")
+        return
+    if verdict == "fastboot":
+        raise RuntimeError(
+            "bridge reached factory FASTBOOT, not BROM download mode. "
+            "The read-only dumper needs BROM; note this device state and "
+            "report it -- fastboot operations are a separate, explicitly "
+            "authorised workflow."
+        )
+    raise RuntimeError(
+        "preloader bridge did not produce 0e8d:0003; see log for the "
+        "verdict and next candidate"
+    )
 
 
 def _run_dump(output_dir: Path, overwrite: bool,

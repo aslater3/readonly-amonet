@@ -137,36 +137,40 @@ shorted halts.
 ### Preloader bridge entry when the button is unavailable (`--via-preloader`)
 
 The preloader tool window (`0e8d:2000`, "Tool connection is unlocked" on
-UART) enumerates on every normal power-on and speaks the same usbdl
-protocol as the BROM. `--via-preloader` uses it as a button-free door into
-BROM mode, following mtkclient's `reset_to_brom` mechanism:
+UART) enumerates on every normal power-on. Its real protocol was decoded
+from a byte-level trace on this hardware: it is **not** the MediaTek
+complement handshake. The tool sends a 5-byte preamble (`5e 0a ca d7 83`)
+then ASCII `READY` every ~20 ms; amonet's `handshake2` for the sibling
+Echo devices waits for `Y` and writes the mode command
+`FACTFACT`, which asks the preloader to reboot into the factory fastboot
+stage. The bridge therefore:
 
-1. wait for `0e8d:2000` (plug in or power the device; the window is ~10 s
-   per boot — start the tool first and it waits for you);
-2. handshake (preloader variant: extra leading `0xA0`);
-3. after the handshake, **blind WRITE32 frames with zero reads**: the
-   tool mirrors host bytes back with lag (echo-only semantics), so
-   response parsing cannot be trusted; five D4 frames (watchdog disable,
-   misc unlock, watchdog-resettable, relock, volatile usbdl flag —
-   `0x444C` magic, enable bit, "handled by BROM" clear) plus the TOPRGU
-   SWRST frame go out back-to-back in well under a second;
-4. the outcome IS the verification:
-   * `0e8d:0003` → success, the normal dump flow continues;
-   * `0e8d:2000` back after a gap → the SoC reset but the BROM ignored
-     the flag at that address; the tool re-handshakes on the same
-     power-up (no OS boot, no boot_count cost) and automatically retries
-     the next candidate: `0x10001838`, `0x1000141C`, `0x1001a100`;
-   * `0e8d:2000` never blinked → the frames had no effect; the bridge
-     stops instead of wasting further windows.
+1. waits for `0e8d:2000` and detaches `cdc_acm` immediately (before the
+   kernel eats the preamble);
+2. reads until a `READY` token, then sends `FACTFACT`;
+3. classifies the re-enumeration:
+   * `0e8d:0003` → BROM download mode; the dump continues immediately;
+   * any other `0e8d` PID → factory fastboot stage; the dumper stops
+     here (read-only scope) and asks you to report the state —
+     fastboot use is a separate explicitly authorised workflow;
+   * `0e8d:2000` returns unchanged → command ignored: the bridge falls
+     back on the same power-up to the volatile register arm (mtkclient
+     `reset_to_brom`): blind `0xD4` WRITE32 frames — watchdog disable,
+     misc unlock, watchdog-resettable, relock, usbdl flag (`0x444C`
+     magic | timeout | enable | BROM-bit clear) at `misc_lock-0x20`,
+     then TOPRGU SWRST — verified by the enumeration verdict, retrying
+     `misc_lock` candidates `0x10001838`, `0x1000141C`, `0x1001a100`;
+   * device disappears and nothing MTK returns → it booted normally.
 
 ```bash
 python3 modules/dump.py --via-preloader dump
 ```
 
-Everything this path touches is volatile register state — no flash, RPMB,
-or other persistent write; removing power clears the arm. Override the
+Everything this path touches is volatile register state or a RAM mode
+request — no flash, RPMB, or other persistent write. Override the
 starting candidate with `--misc-lock 0x...` if you have evidence for a
-different TOPRGU layout.
+different TOPRGU layout. `modules/bridge_diag.py` is the raw packet
+observer used to decode this protocol; rerun it if behaviour changes.
 
 From the repository root, run:
 
