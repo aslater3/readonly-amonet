@@ -202,30 +202,49 @@ def test_unknown_brom_status_is_reported_in_both_endiannesses() -> None:
     assert "BE 0xefbe" in message
 
 
-def test_stage1_restores_usb_before_any_payload_io_and_has_no_uart_dependency() -> None:
+def test_stage1_matches_mt8167_v1_handoff_and_has_no_uart_dependency() -> None:
     source = (ROOT / "brom-payload" / "stage1.c").read_text(encoding="utf-8")
+
+    # Stage 1 must not block on a UART which may not be clocked/muxed yet.
     assert "0x11005000" not in source
     assert "low_uart_put" not in source
-    restore_at = source.index("*(volatile uint32_t *)(table[0] + 8) = table[2]")
-    response_at = source.index("send_usb_response(1, 0, 1)")
-    sync_at = source.index("send_dword(0xA1A2A3A4)")
-    assert restore_at < response_at < sync_at
+
+    # Kamakiri v1 does not perform kamakiri2's ptr_send overwrite, so stage 1
+    # must not repair table[0]+8 before talking back to the host.
+    assert "table[0]" not in source
+    assert "brom_usb_init" not in source
+
+    # These are the helper entry points retained by the upstream MT8167 port.
+    for helper in ("0x6C7D", "0xD1FF", "0xD1CB", "0xD241"):
+        assert helper in source
+
+    response_at = source.index("brom_send_usb_response(1, 0, 1)")
+    sync_at = source.index("brom_send_dword(0xA1A2A3A4)")
+    assert response_at < sync_at
 
 
-def test_stage1_and_stage2_use_no_unverified_hardcoded_brom_helpers() -> None:
-    # 0xd1ff/0xd1cb are MT8163 leftovers that crash this 8167 BROM build on
-    # first call.  All payload I/O must come from the runtime-resolved
-    # 0xd2e4 USB table (brom_usb_init); only the pattern-verified
-    # send_usb_response entry 0x6c7d may appear as an immediate.
-    import struct
+def test_stage2_keeps_runtime_resolved_usb_data_helpers() -> None:
+    # Stage 2 remains intentionally unchanged in this fix.  Keep its current
+    # runtime-resolved data path isolated until stage 1 has been proven on
+    # hardware; a stage-2 failure can then be diagnosed independently.
+    blob = (ROOT / "brom-payload" / "stage2" / "stage2.bin").read_bytes()
+    for value in (0xD1FF, 0xD1CB, 0xD2C7, 0xD241):
+        assert struct.pack("<I", value) not in blob, (
+            f"stage2 contains hardcoded BROM helper {value:#x}"
+        )
 
-    allowed = {0x6C7D, 0x10007000, 0x22000014, 0x1209, 0x1971, 0xD2E4}
-    for name in ("stage1", "stage2"):
-        blob = (ROOT / "brom-payload" / name / f"{name}.bin").read_bytes()
-        for value in (0xD1FF, 0xD1CB, 0xD2C7, 0xD241):
-            assert struct.pack("<I", value) not in blob, (
-                f"{name} contains forbidden hardcoded helper {value:#x}"
-            )
+
+def test_v1_trigger_to_stage1_sync_does_not_reset_or_clear_halt() -> None:
+    source = (MODULES / "load_payload.py").read_text(encoding="utf-8")
+    assert "clear_halt" not in source
+    assert 'device.allow_usb_reset = False' in source
+    assert 'device.timeout = 3' in source
+
+    trigger_at = source.index("kamakiri_v1(device, stage1)")
+    wait_at = source.index('log("Waiting for stage 1 to come online...")')
+    read_at = source.index("data = device.read(4)", wait_at)
+    restore_reset_at = source.index("device.allow_usb_reset = old_allow_usb_reset")
+    assert trigger_at < wait_at < read_at < restore_reset_at
 
 
 def test_kamakiri_v1_spray_plants_little_endian_payload_pointer() -> None:
@@ -233,8 +252,6 @@ def test_kamakiri_v1_spray_plants_little_endian_payload_pointer() -> None:
     # Device.write32() puts its word on the wire big-endian.  kamakiri_v1
     # must pre-byteswap so the planted wire bytes are 00 0a 10 00 (LE
     # encoding of 0x00100A00), matching bypass_utility's double-swap.
-    import struct
-
     sys.path.insert(0, str(MODULES))
     import kamakiri_v1
     from common import from_bytes, to_bytes
