@@ -10,10 +10,25 @@
 
 #include "debug.h"
 
+/*
+ * The debug UART (0x11005000) is best-effort only: at payload time the
+ * preloader has not run, its clock gate may still be closed, and waiting
+ * forever for TX-ready would hang the payload before its USB sync.  Bound
+ * the wait and silently drop characters when the UART is not draining.
+ */
+#define UART_TX_SPIN_MAX 200000
+
 void low_uart_put(int ch) {
-    while (!(*(volatile uint32_t*)0x11005014 & 0x20))
-        ;
-    *(volatile uint32_t*)0x11005000 = ch;
+    volatile uint32_t *lsr = (volatile uint32_t *)0x11005014;
+    volatile uint32_t *thr = (volatile uint32_t *)0x11005000;
+
+    for (uint32_t spin = 0; spin < UART_TX_SPIN_MAX; ++spin) {
+        if (*lsr & 0x20) {
+            *thr = ch;
+            return;
+        }
+    }
+    /* UART not ready (gate closed / pins unmuxed): drop the character. */
 }
 
 void uart_putc(int c, void* ctx) {
