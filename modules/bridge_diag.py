@@ -99,15 +99,30 @@ def slurp(ep_in, trace, label, seconds, packet_timeout=500):
     return total, True
 
 
-def send(ep_out, trace, label, payload):
+def send(udev, ep_out, trace, label, payload):
     trace("OUT {}: {}".format(label, payload.hex(" ")))
-    try:
-        ep_out.write(payload, 2000)
-        trace("OUT {}: accepted by host stack".format(label))
-        return True
-    except usb.core.USBError as error:
-        trace("OUT {}: ERROR {}".format(label, error))
-        return False
+    for attempt in (1, 2):
+        try:
+            ep_out.write(payload, 2000)
+            trace("OUT {}: accepted by host stack".format(label))
+            return True
+        except usb.core.USBError as error:
+            trace("OUT {}: ERROR {} (attempt {})".format(
+                label, error, attempt))
+            if error.errno == 5 and attempt == 1:
+                # EIO on a freshly-detached interface usually means a
+                # halted pipe / stale data toggle from the previous
+                # session: clear halt on both bulk endpoints and retry.
+                for ep in (ep_out,):
+                    try:
+                        udev.clear_halt(ep)
+                        trace("  clear_halt(ep 0x{:02X}) ok".format(
+                            ep.bEndpointAddress))
+                    except usb.core.USBError as halt_error:
+                        trace("  clear_halt: {}".format(halt_error))
+            else:
+                return False
+    return False
 
 
 def main(argv):
@@ -117,7 +132,7 @@ def main(argv):
     path = os.path.join(out_dir, "bridge-diag.txt")
     trace = Trace(path)
     try:
-        _, ep_in, ep_out = find_preloader(trace)
+        udev, ep_in, ep_out = find_preloader(trace)
 
         # Phase 1: greeting only. How big is it, what is in it, and does
         # it keep streaming (mirror) after the first burst?
@@ -125,17 +140,17 @@ def main(argv):
 
         # Phase 2: handshake lead + bytes, raw responses, no matching.
         if alive:
-            send(ep_out, trace, "lead a0", b"\xA0")
+            send(udev, ep_out, trace, "lead a0", b"\xA0")
             slurp(ep_in, trace, "lead response", 1.0)
             for index, byte in enumerate(HANDSHAKE):
-                send(ep_out, trace, "hs[{}]".format(index),
+                send(udev, ep_out, trace, "hs[{}]".format(index),
                      bytes([byte]))
                 slurp(ep_in, trace, "hs[{}] response".format(index), 1.0)
 
         # Phase 3: GET_HW_CODE. mtkclient expects echo fd + 2B hw + 2B
         # status. We only record; 0xFD is safe/read-only.
         if alive:
-            send(ep_out, trace, "cmd fd (GET_HW_CODE)", b"\xFD")
+            send(udev, ep_out, trace, "cmd fd (GET_HW_CODE)", b"\xFD")
             slurp(ep_in, trace, "fd response", 2.0)
 
         # Phase 4: one harmless WRITE32: TOPRGU watchdog MODE key+reload
@@ -145,7 +160,7 @@ def main(argv):
         if alive and do_write:
             frame = bytes.fromhex("d4") + (0x10007000).to_bytes(4, "big") \
                 + (1).to_bytes(4, "big") + (0x22000064).to_bytes(4, "big")
-            send(ep_out, trace, "D4 wdt-disable frame", frame)
+            send(udev, ep_out, trace, "D4 wdt-disable frame", frame)
             slurp(ep_in, trace, "wdt frame response", 2.0)
 
         trace("done; no arm flag and no reset were issued; the preloader "
