@@ -62,6 +62,9 @@ WDT_DISABLE_VALUE = 0x22000064
 WDT_SWRST_OFFSET = 0x14
 WDT_SWRST_KEY = 0x1209
 CMD_WRITE32 = 0xD4
+LISTEN_PHASE_DELAY = 0.32   # s after handshake: UART 'usb_listen sync
+                            # time 232ms' — command must land after this
+CMD_SYNC = b"\xa0\x0a\x50\x05"
 DEFAULT_MISC_LOCK = 0x10002050
 MISC_LOCK_FALLBACKS = (0x10002050, 0x10001838, 0x1000141C, 0x1001a100)
 DEFAULT_TIMEOUT_S = 600
@@ -215,45 +218,103 @@ class PreloaderDevice:
             command, f" padded to {pad_to}B frame" if pad_to else ""))
         self._write(payload)
 
+    def _drain_in(self, quiet_ms=120, max_bytes=8192):
+        """Read IN until the pipe is quiet, returning everything drained.
+
+        Clears lagged READY/mirror bytes so response matching cannot
+        be fooled by bytes the tool streamed before our write.
+        """
+        buf = bytearray()
+        last = time.time()
+        while time.time() - last < quiet_ms / 1000.0 and len(buf) < max_bytes:
+            try:
+                buf.extend(self._read_packet(timeout_ms=100))
+                last = time.time()
+            except (usb.core.USBError, PreloaderBridgeError):
+                continue
+        return bytes(buf)
+
+    def wait_listen_phase(self, silence_ms=80, deadline_s=3.0):
+        """Block until the tool's READY stream goes silent.
+
+        UART timestamping proved the tool keeps streaming READY for
+        ~230 ms after handshake bytes start ('usb_listen sync time
+        232ms'), and only THEN opens the command listen window. Every
+        FACTFACT so far was written ~20 ms after the first READY token
+        -- inside the handshake window -- and was eaten as junk. The
+        READY stream stopping is the host-visible transition into the
+        listen phase: wait for it, then the command lands where it can
+        act.
+        """
+        deadline = time.time() + deadline_s
+        last_rx = None
+        while time.time() < deadline:
+            try:
+                self._read_packet(timeout_ms=60)
+                last_rx = time.time()
+            except usb.core.USBError as error:
+                if error.errno != 110:
+                    # EIO: the tool stopped polling the pipe -- that is
+                    # at least as good a phase-transition signal.
+                    log("  IN pipe quieted with {} (phase transition)".format(
+                        error.strerror or error.errno))
+                    return True
+            except PreloaderBridgeError:
+                pass
+            if last_rx is not None and \
+                    (time.time() - last_rx) * 1000.0 >= silence_ms:
+                log("  READY stream stopped after {:.0f} ms -- listen "
+                    "phase".format((last_rx - (deadline - deadline_s))
+                                   * 1000.0))
+                return True
+        log("  READY stream never stopped within {:.0f}s".format(deadline_s))
+        return False
+
     def complement_handshake(self, deadline_s=2.0, retries=4):
         """mtkclient's a0 0a 50 05 byte-wise complement handshake.
 
-        UART evidence from THIS unit: this handshake is what moves the
-        tool from the READY stream into the 'usb_listen sync' command
-        phase (22:10 log: 'Preloader handshake OK' followed by UART
-        '[TOOL] func: usb_listen sync time 191ms', and a subsequent
-        D4 WRITE32 answered with full echo+status). FACTFACT sent
-        WITHOUT this handshake is consumed as handshake junk ('should
-        be 8 bytes less than 512 bytes') and never executed.
-
-        Tolerates stale READY/preamble bytes lagging in the IN pipe.
-        Raises PreloaderBridgeError if the complements never line up.
+        Hardware lesson (2026-09-08): the tool IN stream lags; a loose
+        matcher 'completed' the handshake in 21 ms against buffered
+        READY bytes while the UART said the tool had received exactly
+        ONE byte. So: drain to silence first, then require the exact
+        complement as the WHOLE next packet, and treat a whole 4-byte
+        walk faster than ~60 ms as impossible (lagged echo) and retry.
         """
         startcmd = b"\xa0\x0a\x50\x05"
         for attempt in range(1, retries + 1):
+            stale = self._drain_in()
+            if stale and attempt == 1:
+                log("  drained {} stale IN byte(s) before handshake"
+                    .format(len(stale)))
             i = 0
+            t_start = time.time()
             deadline = time.time() + deadline_s
-            junk = bytearray()
             while i < len(startcmd) and time.time() < deadline:
                 try:
                     self._write(startcmd[i:i + 1])
                     packet = self._read_packet(timeout_ms=800)
                 except (usb.core.USBError, PreloaderBridgeError):
                     break
-                junk.extend(packet)
-                # accept the expected complement anywhere in the packet
                 want = bytes([~startcmd[i] & 0xFF])
-                if want in packet:
+                # mtkclient semantics: complement may arrive padded;
+                # the drain + elapsed guards above cover lagged bytes.
+                if packet[-1:] == want:
                     i += 1
-                elif packet and packet != b"READY":
-                    # mirror/lag or a different tool mode: restart walk
-                    i = 0
+                else:
+                    log("  handshake byte {}: sent {:02x}, got {} "
+                        "(not a live complement)".format(
+                            i, startcmd[i], packet[:8].hex(" ")))
+                    break
             if i == len(startcmd):
-                log("  complement handshake OK (attempt {})".format(attempt))
+                elapsed_ms = (time.time() - t_start) * 1000.0
+                if elapsed_ms < 60.0:
+                    log("  handshake walked in {:.0f}ms -- physically "
+                        "impossible, treating as lagged echo".format(
+                            elapsed_ms))
+                    continue
+                log("  complement handshake OK (attempt {}, {:.0f}ms)"
+                    .format(attempt, elapsed_ms))
                 return True
-            if junk:
-                log("  handshake attempt {}: unexpected {} -- retrying"
-                    .format(attempt, bytes(junk[:8]).hex(" ")))
         raise PreloaderBridgeError("complement handshake never completed")
 
     # ---- secondary: volatile register arm (blind, verified by outcome) --
@@ -414,6 +475,13 @@ def bridge_to_brom(misc_lock=DEFAULT_MISC_LOCK, tool_cmd=DEFAULT_TOOL_CMD,
     for pad_to in frames:
         try:
             dev.wait_ready()
+            # UART-proven phase gate: the READY stream keeps running
+            # until the tool enters its command-listen phase ('usb_
+            # listen sync time 232ms'), and anything written before the
+            # stream stops is counted into the handshake block ('should
+            # be N bytes less than 512') and eaten. Wait for the stream
+            # to stop, THEN open the command protocol.
+            dev.wait_listen_phase()
             # THE key experiment: enter the tool's command phase first
             # (complement handshake -> UART shows 'usb_listen sync'),
             # THEN the mode request. Every FACTFACT so far was sent
@@ -466,6 +534,8 @@ def bridge_to_brom(misc_lock=DEFAULT_MISC_LOCK, tool_cmd=DEFAULT_TOOL_CMD,
                     fresh.wait_ready()      # stay polite; stream-tolerant
                 except PreloaderBridgeError:
                     pass                    # blind frames anyway
+                fresh.wait_listen_phase()   # D4 only means anything in
+                                            # the command phase
                 # The D4 WRITE32 protocol only lives in the tool's
                 # command phase; the complement handshake is the door
                 # (UART 'usb_listen sync' confirms entry on success).

@@ -360,3 +360,21 @@ def test_fastboot_verdict_requires_interface_signature() -> None:
     assert bridge.FASTBOOT_CLASS == 0xFF
     assert bridge.FASTBOOT_SUBCLASS == 0x42
     assert bridge.FASTBOOT_PROTOCOL == 0x03
+
+
+def test_bridge_gates_commands_on_listen_phase() -> None:
+    # UART scoreboard: FACTFACT written while the READY stream is
+    # running is counted into the 512-byte handshake block and eaten.
+    # Stage 1 AND the register arm must wait for the READY stream to
+    # stop (wait_listen_phase) before writing commands, and the
+    # handshake matcher must distrust impossible-fast walks.
+    import inspect
+
+    import preloader_entry as bridge
+
+    src = inspect.getsource(bridge.bridge_to_brom)
+    assert src.count("wait_listen_phase") >= 2
+    hs = inspect.getsource(bridge.PreloaderDevice.complement_handshake)
+    assert "_drain_in" in hs
+    assert "impossible" in hs
+    assert bridge.LISTEN_PHASE_DELAY > 0.2
