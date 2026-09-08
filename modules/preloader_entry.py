@@ -381,17 +381,21 @@ def bridge_to_brom(misc_lock=DEFAULT_MISC_LOCK, tool_cmd=DEFAULT_TOOL_CMD,
         verdict = _watch_verdict()
         if verdict in ("brom", "fastboot"):
             return verdict
-        if verdict == "booted_os" and pad_to == 0 and len(frames) > 1:
-            log("raw command left the tool waiting for 504 more bytes; "
-                "power-cycle the device and the run will retry with a "
-                "512-byte frame automatically")
+        booted = verdict in ("booted_os", "gone_booting")
+        if booted and pad_to == 0 and len(frames) > 1:
+            # Device booted normally after the raw 8-byte command: the
+            # UART says exactly why (it waits for a full 512-byte
+            # frame). Escalate the framing on a fresh window.
+            log("raw command left the tool waiting for the rest of the "
+                "512-byte frame; power-cycle the device and the run "
+                "will retry with a padded 512-byte frame automatically")
             dev = PreloaderDevice()
-            if not dev.find(deadline=time.time() + 180):
+            if not dev.find(deadline=time.time() + 240):
                 log("no fresh tool window appeared; rerun and power-cycle")
                 return False
             continue
-        break               # preloader_back / gone_booting / timeout
-    if verdict == "booted_os":
+        break               # preloader_back / timeout
+    if verdict in ("booted_os", "gone_booting"):
         log("mode request did not gate the boot even as a full 512B "
             "frame -- this preloader does not honour it over USB")
         return False

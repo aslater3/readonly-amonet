@@ -587,7 +587,13 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     try:
-        raise SystemExit(main())
+        code = main()
     except KeyboardInterrupt:
         print("\nInterrupted; no device write or reboot was requested.", file=sys.stderr)
-        raise SystemExit(130)
+        code = 130
+    # All log finalisation happens inside main(); libusb's atexit
+    # teardown has been observed to segfault on exit with a detached
+    # preloader still on the bus. Flush and exit without it.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
