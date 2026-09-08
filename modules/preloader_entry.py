@@ -215,6 +215,47 @@ class PreloaderDevice:
             command, f" padded to {pad_to}B frame" if pad_to else ""))
         self._write(payload)
 
+    def complement_handshake(self, deadline_s=2.0, retries=4):
+        """mtkclient's a0 0a 50 05 byte-wise complement handshake.
+
+        UART evidence from THIS unit: this handshake is what moves the
+        tool from the READY stream into the 'usb_listen sync' command
+        phase (22:10 log: 'Preloader handshake OK' followed by UART
+        '[TOOL] func: usb_listen sync time 191ms', and a subsequent
+        D4 WRITE32 answered with full echo+status). FACTFACT sent
+        WITHOUT this handshake is consumed as handshake junk ('should
+        be 8 bytes less than 512 bytes') and never executed.
+
+        Tolerates stale READY/preamble bytes lagging in the IN pipe.
+        Raises PreloaderBridgeError if the complements never line up.
+        """
+        startcmd = b"\xa0\x0a\x50\x05"
+        for attempt in range(1, retries + 1):
+            i = 0
+            deadline = time.time() + deadline_s
+            junk = bytearray()
+            while i < len(startcmd) and time.time() < deadline:
+                try:
+                    self._write(startcmd[i:i + 1])
+                    packet = self._read_packet(timeout_ms=800)
+                except (usb.core.USBError, PreloaderBridgeError):
+                    break
+                junk.extend(packet)
+                # accept the expected complement anywhere in the packet
+                want = bytes([~startcmd[i] & 0xFF])
+                if want in packet:
+                    i += 1
+                elif packet and packet != b"READY":
+                    # mirror/lag or a different tool mode: restart walk
+                    i = 0
+            if i == len(startcmd):
+                log("  complement handshake OK (attempt {})".format(attempt))
+                return True
+            if junk:
+                log("  handshake attempt {}: unexpected {} -- retrying"
+                    .format(attempt, bytes(junk[:8]).hex(" ")))
+        raise PreloaderBridgeError("complement handshake never completed")
+
     # ---- secondary: volatile register arm (blind, verified by outcome) --
     def arm_brom_blind(self, misc_lock=DEFAULT_MISC_LOCK,
                        timeout_s=DEFAULT_TIMEOUT_S):
@@ -373,6 +414,15 @@ def bridge_to_brom(misc_lock=DEFAULT_MISC_LOCK, tool_cmd=DEFAULT_TOOL_CMD,
     for pad_to in frames:
         try:
             dev.wait_ready()
+            # THE key experiment: enter the tool's command phase first
+            # (complement handshake -> UART shows 'usb_listen sync'),
+            # THEN the mode request. Every FACTFACT so far was sent
+            # cold, during the handshake phase, and was eaten as junk.
+            try:
+                dev.complement_handshake(deadline_s=1.0, retries=2)
+            except (PreloaderBridgeError, usb.core.USBError) as error:
+                log("  complement handshake failed ({}); sending mode "
+                    "request anyway".format(error))
             dev.send_command(tool_cmd, pad_to=pad_to)
         except (PreloaderBridgeError, usb.core.USBError) as error:
             log("stage 1 (READY/{}, {} frame) failed: {}".format(
@@ -416,6 +466,13 @@ def bridge_to_brom(misc_lock=DEFAULT_MISC_LOCK, tool_cmd=DEFAULT_TOOL_CMD,
                     fresh.wait_ready()      # stay polite; stream-tolerant
                 except PreloaderBridgeError:
                     pass                    # blind frames anyway
+                # The D4 WRITE32 protocol only lives in the tool's
+                # command phase; the complement handshake is the door
+                # (UART 'usb_listen sync' confirms entry on success).
+                try:
+                    fresh.complement_handshake(deadline_s=1.0, retries=2)
+                except (PreloaderBridgeError, usb.core.USBError):
+                    pass                    # arm anyway; verdict decides
                 fresh.arm_brom_blind(misc_lock=candidate)
             except (PreloaderBridgeError, usb.core.USBError) as error:
                 log("register arm failed: {}".format(error))

@@ -147,7 +147,9 @@ stage. The bridge therefore:
 
 1. waits for `0e8d:2000` and detaches `cdc_acm` immediately (before the
    kernel eats the preamble);
-2. reads until a `READY` token, then sends `FACTFACT`;
+2. reads until a `READY` token, performs the MediaTek complement
+   handshake (`a0 0a 50 05` — UART confirms entry into the command
+   phase via `usb_listen sync`), then sends `FACTFACT`;
 3. classifies the re-enumeration:
    * `0e8d:0003` → BROM download mode; the dump continues immediately;
    * an `0e8d` device whose interfaces match the fastboot signature
